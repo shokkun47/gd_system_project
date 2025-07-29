@@ -1,0 +1,19 @@
+# Python の仮想環境、キャッシュ、ログファイルなど
+__pycache__/
+*.pyc
+.Python
+venv/  # 仮想環境のフォルダ名
+*.env
+.env
+*.log
+*.sqlite3
+*.db
+
+# クラウドAIサービスの認証情報（絶対にGit管理から除外）
+*.json  # サービスアカウントキーのJSONファイルなど
+.credentials/ # 認証情報を格納するフォルダがあれば追加
+.vscode/ # VS Codeの設定ファイル（共有しない場合）
+
+# OS特有のファイル
+.DS_Store # macOS
+Thumbs.db # Windows
