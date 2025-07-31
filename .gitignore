@@ -9,10 +9,14 @@ venv/  # 仮想環境のフォルダ名
 *.sqlite3
 *.db
 
+# 音声ファイル
+*.wav
+
 # クラウドAIサービスの認証情報（絶対にGit管理から除外）
 .credentials/ # 認証情報を格納するフォルダがあれば追加
 *.json  # サービスアカウントキーのJSONファイルなど
 .vscode/ # VS Codeの設定ファイル（共有しない場合）
+
 
 # OS特有のファイル
 .DS_Store # macOS
