@@ -12,7 +12,10 @@ from google.cloud import speech_v1p1beta1 as speech
 # from google.cloud.speech_v1p1beta1 import enums  <-- この行を削除
 
 # --- 設定 ---
-AUDIO_FILE_NAME = "audio_data/user_input.wav" # 音声を一時的に保存するファイル名 (デバッグ用)
+# プロジェクトルートのパスを動的に取得
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+AUDIO_FILE_NAME = os.path.join(PROJECT_ROOT, "audio_data", "user_input.wav") 
+
 RATE = 16000                     # サンプリングレート (Hz) - Google Speech-to-Textの推奨
 CHUNK = 1024                     # 1度に読み込むフレーム数
 RECORD_SECONDS = 5               # 録音する秒数（例として5秒）
