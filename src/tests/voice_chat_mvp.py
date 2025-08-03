@@ -13,6 +13,10 @@ from google.cloud import texttospeech_v1beta1 as texttospeech
 import openai 
 
 # --- 設定 ---
+
+# voice_chat_mvp.py は src/tests/ にあるため、3階層上に遡る
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # 音声I/O（Input/Output）に関する共通設定
 RATE = 16000     # サンプリングレート (Hz): 1秒間に音声を何回デジタル化するか。ASR/TTSの推奨値。
 CHUNK = 1024     # 音声データを処理する際のバッファサイズ（一度に読み込むフレーム数）。
@@ -20,8 +24,8 @@ FORMAT = pyaudio.paInt16 # 音声データのフォーマット。16ビット整
 CHANNELS = 1     # 音声チャンネル数。1はモノラル、2はステレオ。マイク録音は通常モノラル。
 
 # 生成・保存するファイル名
-USER_AUDIO_FILE = "audio_dada/user_input_mvp.wav" # ユーザーの録音音声を一時保存するファイル名（デバッグ用）
-AI_AUDIO_FILE = "audio_data/ai_output_mvp.wav"   # AIの生成音声を一時保存するファイル名（デバッグ用）
+USER_AUDIO_FILE = os.path.join(PROJECT_ROOT, "audio_data", "user_input_mvp.wav") # ユーザーの録音音声を一時保存するファイル名（デバッグ用）
+AI_AUDIO_FILE = os.path.join(PROJECT_ROOT, "audio_data", "ai_output_mvp.wav") # AIの生成音声を一時保存するファイル名（デバッグ用）
 
 # 言語設定
 LANGUAGE_CODE_ASR = "ja-JP" # ASR（音声認識）で認識する言語コード（日本語）
