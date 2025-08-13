@@ -51,7 +51,7 @@ class GDManager:
         self.num_ai_participants = num_ai_participants
         self.conversation_history = [] 
         self.current_phase = "導入" 
-        self.time_limit_minutes = 5
+        self.time_limit_minutes = 2
         self.start_time = time.time() 
         self.turn_count = 0 
         self.current_speaker = "システム" 
@@ -101,7 +101,6 @@ class GDManager:
         elif ai_id == "AI参加者B":
             # return "あなたはGDの参加者であるAI参加者Bです。常に批判的な視点から問題点を指摘し、議論を深掘りします。リスク評価や実現可能性の検討が得意です。"
             return "あなたはGDの参加者であるAI参加者Bです。積極的に意見を出し、具体的な提案を重視します。"
-
         elif ai_id == "AI参加者C":
             return "あなたはGDの参加者であるAI参加者Cです。協調的で、議論の要約や確認を好み、参加者間の合意形成を促します。円滑なコミュニケーションを重視します。"
         else:
@@ -301,7 +300,7 @@ class GDManager:
         user_text = self._transcribe_audio(recorded_audio)
         
         if not user_text:
-            system_message = "ファシリテーターからの発言が無いようです。何かお困りですか? GDの進行を促してください。"
+            system_message = "ファシリテーターからの発言が無いようです。GDの進行を促してください。"
             print(f"[システム]: {system_message}")
             self._synthesize_and_play_system_message(system_message)
             return True
@@ -316,11 +315,24 @@ class GDManager:
         # --- ステップ1で追加したメソッドを呼び出し、ユーザーの意図を分析 ---
         user_intent = self._analyze_user_intent(user_text)
         print(f"(デバッグ用) ユーザーのファシリテーション意図: {user_intent}")
+        self._update_gd_phase(user_intent)
 
         # --- ここからが新しいAIターン交代ロジック ---
         ai_participants_to_respond = []
 
-        if "特定の参加者への質問" in user_intent:
+        if self.turn_count == 1: # GD開始後の最初のユーザー発言（自己紹介）
+            for ai_name in ["AI参加者A", "AI参加者B", "AI参加者C"]:
+                task_for_ai = "ファシリテーターが自己紹介を終えました。あなたもペルソナに沿って一言で自己紹介をしてください。"
+            
+                llm_response_text = self._get_ai_response(ai_name, task_for_ai)
+                self.add_to_history(ai_name, llm_response_text)
+                print(f"[{ai_name}]: {llm_response_text}")
+                self._synthesize_and_play_ai_response(llm_response_text, ai_name)
+                time.sleep(0.5)
+                self.current_speaker = ai_name
+            return True
+
+        elif "特定の参加者への質問" in user_intent:
             # ユーザーが特定のAIに質問した場合、そのAIだけを応答させる
             target_ai_id = self._get_target_ai_from_text(user_text) # ユーザーの発言からAI名を特定する関数
             print(target_ai_id)
@@ -372,17 +384,14 @@ class GDManager:
                 ai_participants_to_respond = random.sample(ai_participants_to_respond, 1)
                 task_for_ai = f"ファシリテーターが時間管理を促しました。現在の残り時間を報告し、議論の進捗について簡潔にコメントしてください。"
 
-        elif self.turn_count == 1: # GD開始後の最初のユーザー発言（自己紹介）
-            for ai_name in ["AI参加者A", "AI参加者B", "AI参加者C"]:
-                task_for_ai = "ファシリテーターが自己紹介を終えました。あなたもペルソナに沿って30文字以内で自己紹介をしてください。"
-            
-                llm_response_text = self._get_ai_response(ai_name, task_for_ai)
-                self.add_to_history(ai_name, llm_response_text)
-                print(f"[{ai_name}]: {llm_response_text}")
-                self._synthesize_and_play_ai_response(llm_response_text, ai_name)
-                time.sleep(0.5)
-                self.current_speaker = ai_name
-            return True
+        elif "意見引き出し" in user_intent or "議題設定" in user_intent:
+            all_ai_participants = [ai for ai in self.participants.keys() if ai.startswith("AI")]
+            ai_participants_to_respond = random.sample(all_ai_participants, 2)
+            task_for_ai = "直前の議論（ユーザーの発言も含む）を踏まえ、ペルソナに沿って発言してください。発言は簡潔にしてください。" 
+        
+        elif "要約" in user_intent:
+            ai_participants_to_respond.append("AI参加者C")
+            task_for_ai = f"ファシリテーターが要約を促しました。これまでの議論の要点をまとめてください。発言は簡潔にしてください。"
 
         else: # それ以外の発言（一般的な発言やGDの停滞など）
             all_ai_participants = [ai for ai in self.participants.keys() if ai.startswith("AI")]
@@ -429,6 +438,53 @@ class GDManager:
         """会話履歴に発言を追加する"""
         self.conversation_history.append({"speaker": speaker, "content": content})
 
+    def generate_simple_feedback_report(self):
+        """
+        GD終了後に簡易フィードバックレポートを生成する。
+        """
+        print("\n--- 簡易フィードバックレポート生成中 ---")
+        report = {}
+        
+        total_utterances = len(self.conversation_history)
+        duration_minutes = int((time.time() - self.start_time) / 60)
+        report["総GD時間(分)"] = duration_minutes
+        report["総発言数"] = total_utterances
+
+        speaker_counts = {}
+        for entry in self.conversation_history:
+            if entry["speaker"] != "システム":
+                speaker_counts[entry['speaker']] = speaker_counts.get(entry['speaker'], 0) + 1
+        report["参加者別発言回数"] = speaker_counts
+
+        report["最終到達フェーズ"] = self.current_phase
+
+        feedback_prompt = (
+            "以下のGDログについて、ファシリテーター（ユーザー）の役割を中心に、議論の進行状況や雰囲気に関する簡単な振り返り（50文字程度）と、改善点に関する短い示唆（50文字程度）を生成してください。\n\n"
+            + "\n".join([f"{msg['speaker']}: {msg['content']}" for msg in self.conversation_history])
+        )
+        try:
+            feedback_messages = [
+                {"role": "user", "parts": ["あなたはGDのパフォーマンスを評価し、簡潔な振り返りと示唆を提供するアシスタントです。"]},
+                {"role": "model", "parts": ["承知しました。"]},
+                {"role": "user", "parts": [feedback_prompt]}
+            ]
+            llm_feedback_response = self.gemini_model.generate_content(feedback_messages)
+            
+            if not llm_feedback_response._result.candidates:
+                llm_feedback = f"Geminiからのフィードバック応答がブロックされました。Safety feedback: {llm_feedback_response.prompt_feedback}"
+            else:
+                llm_feedback = llm_feedback_response.text.strip()
+            
+            report["LLMからの総括と示唆"] = llm_feedback
+        except Exception as e:
+            report["LLMからの総括と示唆"] = f"フィードバック生成中にエラー: {e}"
+
+        print("\n--- GD簡易フィードバックレポート ---")
+        for key, value in report.items():
+            print(f"{key}: {value}")
+        print("\nレポート生成が完了しました。")
+        return report
+
     def __del__(self):
         """GDManagerが終了する際にPyAudioリソースを解放する"""
         print("GDManagerの終了処理を実行中...")
@@ -440,13 +496,10 @@ class GDManager:
         """
         LLMを使い、ユーザーのテキストからファシリテーションの意図を判断する。
         """
-        # 判断したい意図のリストを定義
-        # intent_list = ["一般的な発言", "特定の参加者への質問", "議題設定", "意見引き出し", "要約", "役割分担", "時間管理"]
-
         if self.roles_assigned:
-            intent_list = ["一般的な発言", "特定の参加者への質問", "時間管理"]
+            intent_list = ["一般的な発言", "特定の参加者への質問", "時間管理", "意見引き出し", "議題設定", "要約"]
         else:
-            intent_list = ["一般的な発言", "特定の参加者への質問", "時間管理", "役割分担"]
+            intent_list = ["一般的な発言", "特定の参加者への質問", "時間管理", "意見引き出し", "議題設定", "要約", "役割分担"]
 
         # LLMに意図の判断を依頼するプロンプトを構築
         messages = [
@@ -493,6 +546,18 @@ class GDManager:
         print("(デバッグ用) 該当するAIが見つかりませんでした。")
         return None
 
+    def _update_gd_phase(self, user_intent):
+        """ ユーザーの意図に基づいてGDフェーズを更新する """
+        if self.current_phase == "導入" and user_intent == "意見引き出し":
+            self.current_phase = "意見発散"
+            print(f"\n--- フェーズ移行: {self.current_phase} ---")
+        elif self.current_phase == "意見発散" and user_intent == "要約":
+            self.current_phase = "意見収束"
+            print(f"\n--- フェーズ移行: {self.current_phase} ---")
+        elif self.current_phase == "意見収束" and user_intent == "要約":
+            self.current_phase = "決定・結論"
+            print(f"\n--- フェーズ移行: {self.current_phase} ---")
+
 # --- スクリプトの実行（GDManagerの動作確認用） ---
 if __name__ == "__main__":
     print("--- GDManagerの統合テスト開始 ---")
@@ -526,3 +591,12 @@ if __name__ == "__main__":
             break
 
     print("\nGDシミュレーションが完了しました。")
+
+        # ★★★ ここから追記 ★★★
+    print("\n--- 会話履歴（デバッグ用） ---")
+    for turn in manager.conversation_history:
+        print(f"[{turn['speaker']}]: {turn['content']}")
+    print("----------------------------")
+    # ★★★ ここまで追記 ★★★
+
+    manager.generate_simple_feedback_report()
