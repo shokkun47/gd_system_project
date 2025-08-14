@@ -75,12 +75,23 @@ class GDManager:
         self.p_audio = pyaudio.PyAudio() 
 
         # --- 参加者とペルソナの設定 ---
+        # 日本語の一般的な名前の候補リストを作成
+        name_candidates = [
+            "田中", "佐藤", "鈴木", "高橋", "渡辺", "伊藤", "山本", "中村", "小林", "加藤",
+            "吉田", "山田", "佐々木", "山口", "松本", "井上", "木村", "林", "斎藤", "清水",
+            "山崎", "森", "池田", "橋本", "阿部", "石川", "中島", "小野", "藤井", "原田",
+            "岡田", "後藤", "長谷川", "村上", "近藤", "前田", "石田", "坂本", "遠藤", "青木"
+        ]        
+        # 候補からランダムに3名を選出
+        selected_ai_names = random.sample(name_candidates, self.num_ai_participants)
+        
         self.participants = {
             "ユーザー": {"role": "ユーザー", "persona": "あなたはGDを円滑に進行し、結論に導く責任があるファシリテーターです。"}
         }
         self.ai_voice_map = {} 
-        for i in range(num_ai_participants):
-            ai_id = f"AI参加者{chr(ord('A') + i)}" 
+
+        for i, ai_id in enumerate(selected_ai_names):
+            # ランダムに選ばれた名前に対応するペルソナを割り当てる
             persona_text = self._get_default_ai_persona(ai_id)
             self.participants[ai_id] = {"role": ai_id, "persona": persona_text}
             
@@ -95,16 +106,15 @@ class GDManager:
         self._initialize_gd() 
 
     def _get_default_ai_persona(self, ai_id):
-        """AI参加者ごとのデフォルトペルソナを設定する"""
-        if ai_id == "AI参加者A":
-            return "あなたはGDの参加者であるAI参加者Aです。積極的に意見を出し、具体的な提案を重視します。常に新しい視点を提供します。"
-        elif ai_id == "AI参加者B":
-            # return "あなたはGDの参加者であるAI参加者Bです。常に批判的な視点から問題点を指摘し、議論を深掘りします。リスク評価や実現可能性の検討が得意です。"
-            return "あなたはGDの参加者であるAI参加者Bです。積極的に意見を出し、具体的な提案を重視します。"
-        elif ai_id == "AI参加者C":
-            return "あなたはGDの参加者であるAI参加者Cです。協調的で、議論の要約や確認を好み、参加者間の合意形成を促します。円滑なコミュニケーションを重視します。"
-        else:
-            return "あなたはGDの参加者であるAIです。議論に積極的に貢献します。"
+        """AI参加者ごとのデフォルトペルソナをランダムに設定する"""
+        persona_options = [
+            f"あなたはGDの参加者である{ai_id}です。積極的に意見を出し、具体的な提案を重視します。常に新しい視点を提供します。",
+            f"あなたはGDの参加者である{ai_id}です。常に批判的な視点から問題点を指摘し、議論を深掘りします。リスク評価や実現可能性の検討が得意です。",
+            f"あなたはGDの参加者である{ai_id}です。協調的で、議論の要約や確認を好み、参加者間の合意形成を促します。円滑なコミュニケーションを重視します。",
+            f"あなたはGDの参加者である{ai_id}です。議論に積極的に貢献します。"
+        ]
+        # 毎回ランダムなペルソナを割り当てる
+        return random.choice(persona_options)
 
     def _initialize_gd(self):
         """GD開始時の初期メッセージを発言させる"""
@@ -125,12 +135,11 @@ class GDManager:
         # システム指示
         system_instruction_content = (
             f"あなたはGDの参加者である{ai_id}です。あなたのペルソナは以下の通りです:\n"
-            f"{self.participants[ai_id]['persona']}\n"
+            f"{self.participants[ai_id]['persona']}\n" 
             "これまでのGD履歴と、あなたへの指示を踏まえ、適切にGDに参加する発言を生成してください。\n"
             "あなたの発言は、ペルソナに忠実であり、議論の目的達成に貢献するものでなければなりません。\n"
             "簡潔かつ自然な日本語で発言し、不要な説明やAIとしての言及は避けてください。"
         )
-        # Geminiはsystem roleを直接サポートしていないため、user roleに含める
         messages_content.append({"role": "user", "parts": [system_instruction_content]})
         messages_content.append({"role": "model", "parts": ["了解しました。"]}) # AIの初期応答をシミュレート
         
@@ -321,7 +330,10 @@ class GDManager:
         ai_participants_to_respond = []
 
         if self.turn_count == 1: # GD開始後の最初のユーザー発言（自己紹介）
-            for ai_name in ["AI参加者A", "AI参加者B", "AI参加者C"]:
+            # 参加者リストからAIのみを抽出
+            all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
+
+            for ai_name in all_ai_participants:
                 task_for_ai = "ファシリテーターが自己紹介を終えました。あなたもペルソナに沿って一言で自己紹介をしてください。"
             
                 llm_response_text = self._get_ai_response(ai_name, task_for_ai)
@@ -344,57 +356,60 @@ class GDManager:
             # 役割の候補リストと定義
             role_candidates = ["タイムキーパー", "書記", "アイデアマン"]
             random.shuffle(role_candidates) # リストをシャッフル
+            all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
 
-            # 各AIにシャッフルされた役割を割り当てる
-            for i, ai_name in enumerate(["AI参加者A", "AI参加者B", "AI参加者C"]):
-                if time.time() - self.start_time > self.time_limit_minutes * 60:
-                    print("\n--- GD終了: 制限時間になりました ---")
-                    return False 
-
+            for i, ai_name in enumerate(all_ai_participants):
                 if i < len(role_candidates):
-                    # 各AIに新し役割を割り当て、その役割を自己提案するよう指示
                     assigned_role = role_candidates[i]
-                    self.participants[ai_name]["assigned_role"] = assigned_role # 新しい役割を一時保存
-
-                    ai_participants_to_respond.append(ai_name)
-                    task_for_ai = f"ファシリテーターが役割分担を促しました。他のAI参加者がどのような役割を提案したかを考慮し、重複しないように、あなたは「{assigned_role}」という役割を担うことを自己提案してください。発言は簡潔にしてください。"
-                    # AIからの応答を順次生成・処理
-                    llm_response_text = self._get_ai_response(ai_name, task_for_ai)
-                    self.add_to_history(ai_name, llm_response_text) # 履歴に追加
-                    print(f"[{ai_name}]: {llm_response_text}")
+                    self.participants[ai_name]["assigned_role"] = assigned_role
+                    llm_response_text = self._get_ai_response(ai_name, f"ファシリテーターが役割分担を促しました。あなたは「{assigned_role}」という役割を担うことを自己提案してください。発言は簡潔にしてください。")
+                    self.add_to_history(ai_name, llm_response_text)
+                    print(f"[{ai_name}: {llm_response_text}]")
                     self._synthesize_and_play_ai_response(llm_response_text, ai_name)
-                    time.sleep(0.5) # AIの発言間隔をシミュレート (会話の自然さのため)
-                    self.current_speaker = ai_name # 発言者を更新
-
+                    time.sleep(0.5)
+            
             self.roles_assigned = True
             return True
 
         elif "時間管理" in user_intent:
             timekeeper = None
             for ai_name in self.participants:
-                if ai_name.startswith("AI") and self.participants[ai_name].get("assigned_role") == "タイムキーパー":
-                    timekeeper = ai_name
-                    break
+                if ai_name in self.participants:
+                    if ai_name != "ユーザー" and self.participants[ai_name].get("assigned_role") == "タイムキーパー":
+                        timekeeper = ai_name
+                        break
 
             if timekeeper:
                 ai_participants_to_respond.append(timekeeper)
                 task_for_ai = f"ファシリテーターが時間管理を促しました。現在の残り時間を報告し、議論の進捗について簡潔にコメントしてください。"
             else:
-                ai_participants_to_respond = [ai for ai in self.participants.keys() if ai.startswith("AI")]
-                ai_participants_to_respond = random.sample(ai_participants_to_respond, 1)
+                all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
+                ai_participants_to_respond = random.sample(all_ai_participants, 1)
                 task_for_ai = f"ファシリテーターが時間管理を促しました。現在の残り時間を報告し、議論の進捗について簡潔にコメントしてください。"
 
         elif "意見引き出し" in user_intent or "議題設定" in user_intent:
-            all_ai_participants = [ai for ai in self.participants.keys() if ai.startswith("AI")]
+            all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
             ai_participants_to_respond = random.sample(all_ai_participants, 2)
             task_for_ai = "直前の議論（ユーザーの発言も含む）を踏まえ、ペルソナに沿って発言してください。発言は簡潔にしてください。" 
         
         elif "要約" in user_intent:
-            ai_participants_to_respond.append("AI参加者C")
-            task_for_ai = f"ファシリテーターが要約を促しました。これまでの議論の要点をまとめてください。発言は簡潔にしてください。"
+            collaborator = None
+            for ai_name in self.participants:
+                if ai_name != "ユーザー" and self.participants[ai_name].get("assigned_role") == "書記":
+                    collaborator = ai_name
+                    break
+            
+            if collaborator:
+                ai_participants_to_respond.append(collaborator)
+                task_for_ai = f"ファシリテーターが要約を促しました。これまでの議論の要点をまとめてください。発言は簡潔にしてください。"
+
+            else:
+                all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
+                ai_participants_to_respond = random.sample(all_ai_participants, 1)
+                task_for_ai = f"ファシリテーターが要約を促しました。これまでの議論の要点をまとめてください。発言は簡潔にしてください。"
 
         else: # それ以外の発言（一般的な発言やGDの停滞など）
-            all_ai_participants = [ai for ai in self.participants.keys() if ai.startswith("AI")]
+            all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
             num_respondents = random.randint(1, len(all_ai_participants)) # 1人から3人までランダムに選ぶ
             ai_participants_to_respond = random.sample(all_ai_participants, num_respondents)
             
@@ -445,7 +460,7 @@ class GDManager:
         print("\n--- 簡易フィードバックレポート生成中 ---")
         report = {}
         
-        total_utterances = len(self.conversation_history)
+        total_utterances = len(self.conversation_history) - 1
         duration_minutes = int((time.time() - self.start_time) / 60)
         report["総GD時間(分)"] = duration_minutes
         report["総発言数"] = total_utterances
@@ -529,16 +544,12 @@ class GDManager:
         lower_text = text.lower()
 
         for ai_id in self.participants:
-            if ai_id.startswith("AI"):
+            if ai_id != "ユーザー":
                 # ユーザーが使うであろう呼び方のリストを作成
                 possible_names = [
-                    ai_id,                                              # 例: AI参加者A
-                    ai_id.replace("参加者", " "),                       # 例: AI A
-                    ai_id.replace("参加者", "さん"),                     # 例: AIさんA
-                    ai_id.replace("AI参加者", ""),                     # 例: A
-                    ai_id.replace("AI参加者", "") + "さん"             # 例: Aさん
+                    ai_id, # 例: 田中
+                    ai_id + "さん", # 例: 田中さん
                 ]
-
                 for name in possible_names:
                     if name.lower() in lower_text:
                         return ai_id
@@ -591,12 +602,4 @@ if __name__ == "__main__":
             break
 
     print("\nGDシミュレーションが完了しました。")
-
-        # ★★★ ここから追記 ★★★
-    print("\n--- 会話履歴（デバッグ用） ---")
-    for turn in manager.conversation_history:
-        print(f"[{turn['speaker']}]: {turn['content']}")
-    print("----------------------------")
-    # ★★★ ここまで追記 ★★★
-
     manager.generate_simple_feedback_report()
