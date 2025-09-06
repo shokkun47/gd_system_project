@@ -92,7 +92,7 @@ def get_random_gd_theme():
 class MicrophoneStream(object):
     """マイクからの録音ストリームをジェネレーターとして開くクラス。"""
 
-    def __init__(self, rate, chunk, timeout=10):
+    def __init__(self, rate, chunk, timeout=5):
         self._rate = rate
         self._chunk = chunk
         self._timeout = timeout  # タイムアウト設定
@@ -127,25 +127,27 @@ class MicrophoneStream(object):
         self._audio_interface.terminate()
 
     def _fill_buffer(self, in_data, frame_count, time_info, status_flags):
+        """オーディオストリームからバッファにデータを継続的に収集する。"""
+    
         # データをnumpy配列に変換して音量をチェック
         audio_data = np.frombuffer(in_data, dtype=np.int16)
-        volume_threshold = 500  # 音量閾値
-    
-        # 無音でもデータをキューに入れる
-        self._buff.put(in_data) 
+        volume_threshold = 500  # 音量閾値 (この値は環境によって調整可能)
+
+        # まずは無条件にデータをキューにプットする (APIがリアルタイムを期待するため)
+        self._buff.put(in_data)
 
         # 音量が閾値を超えているかチェック
         if np.max(np.abs(audio_data)) > volume_threshold:
-            # 音声が検出されたら、最終発話時間を更新し、発話中フラグを立てる
-            self.last_speech_time = time.time()
             self.speaking = True
-    
-        # 発話中であり、かつ一定時間無音が続いたかチェック
-        if self.speaking and time.time() - self.last_speech_time > self._timeout:
-            # キューに終了信号を送る
+            self.last_speech_time = time.time()
+        else:
+            # 音量が閾値以下の場合、発話中フラグをリセット
+            self.speaking = False
+
+        # 発話が開始された後、一定時間無音が続いたらストリームを閉じる
+        if not self.speaking and time.time() - self.last_speech_time > self._timeout:
             self._buff.put(None)
             self.closed = True
-            self.speaking = False
             print(f"\n[システム]: 無音時間が{self._timeout}秒続いたため、入力を終了します。")
 
         return None, pyaudio.paContinue
@@ -400,208 +402,6 @@ class GDManager:
         except Exception as e:
             print(f"システムメッセージ再生エラー: {e}")
 
-        """
-        ユーザーからの音声をストリーミングで認識し、GDの進行を管理する。
-        """
-        if time.time() - self.start_time > self.time_limit_minutes * 60:
-            print("\n--- GD終了: 制限時間になりました ---")
-            return False
-
-        print("\n[ユーザー]: マイク入力待ち...")
-        
-        # ASR（音声自動認識）設定
-        language_code = "ja-JP"
-        client = speech.SpeechClient()
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=RATE,
-            language_code=language_code,
-            # APIが推奨する設定：話が途切れても一つの発話として認識する
-            enable_automatic_punctuation=True,
-        )
-        streaming_config = speech.StreamingRecognitionConfig(
-            config=config,
-            interim_results=True
-        )
-    
-        user_text = ""
-        try:
-            with MicrophoneStream(RATE, CHUNK, timeout=10) as stream:
-                audio_generator = stream.generator()
-                requests = (
-                    speech.StreamingRecognizeRequest(audio_content=content)
-                    for content in audio_generator
-                )
-            
-                responses = client.streaming_recognize(streaming_config, requests)
-
-                print("認識中...")
-                for response in responses:
-                    if not response.results or not response.results[0].alternatives:
-                        continue
-                
-                    result = response.results[0]
-                    # 最終的な発話結果を取得
-                    if result.is_final:
-                        user_text = result.alternatives[0].transcript.strip()
-                        break # 発話が完了したらループを抜ける
-            
-        except Exception as e:
-            print(f"音声認識エラーが発生しました: {e}")
-            return False
-        
-        if not user_text:
-            # AI参加者リストからランダムに1人または2人を選ぶ
-            all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
-            num_respondents = random.randint(1, 2)
-            ai_participants_to_respond = random.sample(all_ai_participants, num_respondents)
-        
-            # 選択されたAIに議論を促すタスクを与える
-            for ai_name in ai_participants_to_respond:
-                task_for_ai = "議論が停滞しているようです。GDの進行を促す、または次の議題を提案する発言をしてください。"
-                llm_response_text = self._get_ai_response(ai_name, task_for_ai)
-                self.add_to_history(ai_name, llm_response_text)
-                print(f"[{ai_name}]: {llm_response_text}")
-                self._synthesize_and_play_ai_response(llm_response_text, ai_name)
-                time.sleep(0.5)
-                self.current_speaker = ai_name
-            return True # AIの発言でターンを終了        
-                
-        self.add_to_history("ユーザー", user_text) 
-        self.turn_count += 1
-        self.current_speaker = "ユーザー" 
-
-        print(f"\n[ユーザー]: {user_text}")
-
-        # --- GDマネージャー（中央オーケストレーター）の主な判断ロジック ---
-        # --- ステップ1で追加したメソッドを呼び出し、ユーザーの意図を分析 ---
-        user_intent = self._analyze_user_intent(user_text)
-        print(f"(デバッグ用) ユーザーのファシリテーション意図: {user_intent}")
-        self._update_gd_phase(user_intent)
-
-        # --- ここからが新しいAIターン交代ロジック ---
-        ai_participants_to_respond = []
-
-        if self.turn_count == 1: # GD開始後の最初のユーザー発言（自己紹介）
-            # 参加者リストからAIのみを抽出
-            all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
-
-            for ai_name in all_ai_participants:
-                task_for_ai = "ファシリテーターが自己紹介を終えました。あなたもペルソナに沿って一言で自己紹介をしてください。"
-            
-                llm_response_text = self._get_ai_response(ai_name, task_for_ai)
-                self.add_to_history(ai_name, llm_response_text)
-                print(f"[{ai_name}]: {llm_response_text}")
-                self._synthesize_and_play_ai_response(llm_response_text, ai_name)
-                time.sleep(0.5)
-                self.current_speaker = ai_name
-            return True
-
-        elif "特定の参加者への質問" in user_intent:
-            # ユーザーが特定のAIに質問した場合、そのAIだけを応答させる
-            target_ai_id = self._get_target_ai_from_text(user_text) # ユーザーの発言からAI名を特定する関数
-            print(target_ai_id)
-            if target_ai_id:
-                ai_participants_to_respond.append(target_ai_id)
-                task_for_ai = f"ファシリテーターからの質問に答えてください。発言は簡潔に答えてください。"
-
-        elif "役割分担" in user_intent:
-            # 役割の候補リストと定義
-            role_candidates = ["タイムキーパー", "書記", "アイデアマン"]
-            random.shuffle(role_candidates) # リストをシャッフル
-            all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
-
-            for i, ai_name in enumerate(all_ai_participants):
-                if i < len(role_candidates):
-                    assigned_role = role_candidates[i]
-                    self.participants[ai_name]["assigned_role"] = assigned_role
-                    llm_response_text = self._get_ai_response(ai_name, f"ファシリテーターが役割分担を促しました。あなたは「{assigned_role}」という役割を担うことを自己提案してください。発言は簡潔にしてください。")
-                    self.add_to_history(ai_name, llm_response_text)
-                    print(f"[{ai_name}: {llm_response_text}]")
-                    self._synthesize_and_play_ai_response(llm_response_text, ai_name)
-                    time.sleep(0.5)
-            
-            self.roles_assigned = True
-            return True
-
-        elif "時間管理" in user_intent:
-            timekeeper = None
-            for ai_name in self.participants:
-                if ai_name in self.participants:
-                    if ai_name != "ユーザー" and self.participants[ai_name].get("assigned_role") == "タイムキーパー":
-                        timekeeper = ai_name
-                        break
-
-            if timekeeper:
-                ai_participants_to_respond.append(timekeeper)
-                task_for_ai = f"ファシリテーターが時間管理を促しました。現在の残り時間を報告し、議論の進捗について簡潔にコメントしてください。"
-            else:
-                all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
-                ai_participants_to_respond = random.sample(all_ai_participants, 1)
-                task_for_ai = f"ファシリテーターが時間管理を促しました。現在の残り時間を報告し、議論の進捗について簡潔にコメントしてください。"
-
-        elif "意見引き出し" in user_intent or "議題設定" in user_intent:
-            all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
-            ai_participants_to_respond = random.sample(all_ai_participants, 2)
-            task_for_ai = "直前の議論（ユーザーの発言も含む）を踏まえ、ペルソナに沿って発言してください。発言は簡潔にしてください。" 
-        
-        elif "要約" in user_intent:
-            collaborator = None
-            for ai_name in self.participants:
-                if ai_name != "ユーザー" and self.participants[ai_name].get("assigned_role") == "書記":
-                    collaborator = ai_name
-                    break
-            
-            if collaborator:
-                ai_participants_to_respond.append(collaborator)
-                task_for_ai = f"ファシリテーターが要約を促しました。これまでの議論の要点をまとめてください。発言は簡潔にしてください。"
-
-            else:
-                all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
-                ai_participants_to_respond = random.sample(all_ai_participants, 1)
-                task_for_ai = f"ファシリテーターが要約を促しました。これまでの議論の要点をまとめてください。発言は簡潔にしてください。"
-
-        else: # それ以外の発言（一般的な発言やGDの停滞など）
-            all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
-            num_respondents = random.randint(1, len(all_ai_participants)) # 1人から3人までランダムに選ぶ
-            ai_participants_to_respond = random.sample(all_ai_participants, num_respondents)
-            
-            for ai_name in ai_participants_to_respond:
-                if time.time() - self.start_time > self.time_limit_minutes * 60:
-                    print("\n--- GD終了: 制限時間になりました ---")
-                    return False 
-
-                task_for_ai = "直前の議論を踏まえ、ペルソナに沿って自由に発言してください。発言は簡潔にしてください。"         
-                llm_response_text = self._get_ai_response(ai_name, task_for_ai)
-                self.add_to_history(ai_name, llm_response_text)
-                print(f"[{ai_name}]: {llm_response_text}")
-                self._synthesize_and_play_ai_response(llm_response_text, ai_name)
-                time.sleep(0.5)
-                self.current_speaker = ai_name
-            
-            return True
-
-        # AIからの応答を順次生成・処理
-        for ai_name in ai_participants_to_respond:
-
-            if time.time() - self.start_time > self.time_limit_minutes * 60:
-                print("\n--- GD終了: 制限時間になりました ---")
-                return False
-
-            llm_response_text = self._get_ai_response(ai_name, task_for_ai)
-            self.add_to_history(ai_name, llm_response_text)
-            print(f"[{ai_name}]: {llm_response_text}")
-            self._synthesize_and_play_ai_response(llm_response_text, ai_name)
-            time.sleep(0.5) # AIの発言間隔をシミュレート (会話の自然さのため)
-            self.current_speaker = ai_name # 発言者を更新
-
-        # GDの終了条件判定など
-        if time.time() - self.start_time > self.time_limit_minutes * 60:
-            print("\n--- GD終了: 制限時間になりました ---")
-            return False 
-        
-        return True # GDを続行する
-
     def add_to_history(self, speaker, content): 
         """会話履歴に発言を追加する"""
         self.conversation_history.append({"speaker": speaker, "content": content})
@@ -748,7 +548,7 @@ class GDManager:
     
         user_text = ""
         try:
-            with MicrophoneStream(RATE, CHUNK, timeout=10) as stream:
+            with MicrophoneStream(RATE, CHUNK, timeout=5) as stream:
                 audio_generator = stream.generator()
                 requests = (
                     speech.StreamingRecognizeRequest(audio_content=content)
