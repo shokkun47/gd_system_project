@@ -144,11 +144,12 @@ class MicrophoneStream(object):
             # 音量が閾値以下の場合、発話中フラグをリセット
             self.speaking = False
 
-        # 発話が開始された後、一定時間無音が続いたらストリームを閉じる
-        if not self.speaking and time.time() - self.last_speech_time > self._timeout:
-            self._buff.put(None)
-            self.closed = True
-            print(f"\n[システム]: 無音時間が{self._timeout}秒続いたため、入力を終了します。")
+        # タイムアウトが設定されている場合のみ、無音検知を行う
+        if self._timeout is not None:
+            if not self.speaking and time.time() - self.last_speech_time > self._timeout:
+                self._buff.put(None)
+                self.closed = True
+                print(f"\n[システム]: 無音時間が{self._timeout}秒続いたため、入力を終了します。")
 
         return None, pyaudio.paContinue
 
@@ -356,19 +357,13 @@ class GDManager:
         # 音声をPyAudioで再生
         stream = None 
         try:
-            os.makedirs(os.path.dirname(AI_AUDIO_FILE), exist_ok=True) 
-            wf = wave.open(AI_AUDIO_FILE, 'wb')
-            wf.setnchannels(CHANNELS)
-            wf.setsampwidth(self.p_audio.get_sample_size(FORMAT)) 
-            wf.setframerate(RATE)
-            wf.writeframes(audio_content) 
-            wf.close()
-            
-            stream = self.p_audio.open(format=FORMAT, 
-                                      channels=CHANNELS,
-                                      rate=RATE,
-                                      output=True)
-            print("音声を再生中...")
+            stream = self.p_audio.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                output=True
+            )
+            print(f"[{ai_id}]: 音声を再生中...")
             stream.write(audio_content) 
             print("再生終了。")
                 
@@ -393,15 +388,37 @@ class GDManager:
             sample_rate_hertz=RATE
         )
         try:
-            response = self.tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
-            audio_content = response.audio_content
-            stream = self.p_audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, output=True)
+                # ステップ1: 音声合成を呼び出し、バイトデータを取得
+                response = self.tts_client.synthesize_speech(
+                    input=synthesis_input, voice=voice, audio_config=audio_config
+                )
+                audio_content = response.audio_content
+
+        except Exception as e:
+            print(f"システムメッセージ合成エラー: {e}")
+            return
+
+        # ステップ2: 取得したバイトデータを直接再生
+        stream = None
+        try:
+            stream = self.p_audio.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                output=True
+            )
+            print(f"[システム]: 音声を再生中...")
             stream.write(audio_content)
-            stream.stop_stream()
-            stream.close()
+            print("再生終了。")
+
         except Exception as e:
             print(f"システムメッセージ再生エラー: {e}")
 
+        finally:
+            if stream:
+                stream.stop_stream()
+                stream.close()
+                
     def add_to_history(self, speaker, content): 
         """会話履歴に発言を追加する"""
         self.conversation_history.append({"speaker": speaker, "content": content})
@@ -548,7 +565,10 @@ class GDManager:
     
         user_text = ""
         try:
-            with MicrophoneStream(RATE, CHUNK, timeout=5) as stream:
+            # GD開始後の最初の発言（ターンカウントが0）の場合のみ、タイムアウトを適用しない
+            current_timeout = None if self.turn_count == 0 else 5
+
+            with MicrophoneStream(RATE, CHUNK, timeout=current_timeout) as stream:
                 audio_generator = stream.generator()
                 requests = (
                     speech.StreamingRecognizeRequest(audio_content=content)
@@ -571,6 +591,12 @@ class GDManager:
         
         # ユーザーの発言がなかった場合の処理
         if not user_text:
+            # GD開始後の最初の発言で無発話だった場合、システムが何もせずに待機する
+            if self.turn_count == 0:
+                print("[システム]: ユーザーからの発言がありませんでした。お待ちしています。")
+                return True # ユーザーが発話するまでこの関数を再度呼び出す
+            
+            # GD進行中に無発話だった場合
             all_ai_participants = [ai for ai in self.participants.keys() if ai != "ユーザー"]
             num_respondents = random.randint(1, 2)
             ai_participants_to_respond = random.sample(all_ai_participants, num_respondents)
