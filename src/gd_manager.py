@@ -46,7 +46,7 @@ LANGUAGE_CODE_ASR = "ja-JP"     # ASR（音声認識）で認識する言語
 LANGUAGE_CODE_TTS = "ja-JP"     # TTS（音声合成）で生成する言語
 DEFAULT_AI_VOICE_NAME = "ja-JP-Wavenet-C" # AIの声のデフォルト設定（Google TTSのボイス名）
 # LLM_MODEL を Gemini のモデル名に変更
-GEMINI_MODEL = "gemini-1.5-flash-latest" # または "gemini-pro" など。高速版を推奨。
+GEMINI_MODEL = "gemini-2.5-flash"  # Gemini 2.0 Flash モデル
 
 def get_random_gd_theme():
     """
