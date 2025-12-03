@@ -524,12 +524,54 @@ class GDScreen(QWidget):
             }
         """)
         
+        # ローディングオーバーレイ（初期状態は非表示）
+        self.loading_overlay = QFrame()
+        self.loading_overlay.setStyleSheet("""
+            QFrame {
+                background-color: rgba(255, 255, 255, 0.9);
+                border: none;
+            }
+        """)
+        loading_layout = QVBoxLayout()
+        loading_layout.setAlignment(Qt.AlignCenter)
+        
+        loading_spinner = QLabel("⏳")
+        loading_spinner.setStyleSheet("""
+            QLabel {
+                font-size: 48px;
+                background-color: transparent;
+            }
+        """)
+        loading_spinner.setAlignment(Qt.AlignCenter)
+        
+        loading_text = QLabel("GDを開始しています...")
+        loading_text.setStyleSheet("""
+            QLabel {
+                font-size: 18px;
+                font-weight: bold;
+                color: #2c3e50;
+                background-color: transparent;
+                margin-top: 10px;
+            }
+        """)
+        loading_text.setAlignment(Qt.AlignCenter)
+        
+        loading_layout.addWidget(loading_spinner)
+        loading_layout.addWidget(loading_text)
+        self.loading_overlay.setLayout(loading_layout)
+        self.loading_overlay.hide()  # 初期状態は非表示
+        
         main_layout.addWidget(self.system_banner)
         main_layout.addLayout(top_layout)
         main_layout.addWidget(self.minutes_label)
         main_layout.addWidget(self.minutes_text, stretch=1)
         
         self.setLayout(main_layout)
+        
+        # ローディングオーバーレイを最前面に配置（レイアウトの外に配置）
+        self.loading_overlay.setParent(self)
+        self.loading_overlay.setGeometry(0, 0, self.width(), self.height())
+        self.loading_overlay.raise_()  # 最前面に表示
     
     def set_participants(self, participant_names):
         """
@@ -618,6 +660,22 @@ class GDScreen(QWidget):
         """テーマラベルにテーマタイトルのみを表示"""
         theme_title = theme.splitlines()[0] if theme else ""
         self.minutes_label.setText(f"📋 テーマ - {theme_title}")
+    
+    def show_loading(self):
+        """ローディングオーバーレイを表示"""
+        self.loading_overlay.setGeometry(0, 0, self.width(), self.height())
+        self.loading_overlay.show()
+        self.loading_overlay.raise_()  # 最前面に表示
+    
+    def hide_loading(self):
+        """ローディングオーバーレイを非表示"""
+        self.loading_overlay.hide()
+    
+    def resizeEvent(self, event):
+        """ウィンドウリサイズ時にローディングオーバーレイのサイズも更新"""
+        super().resizeEvent(event)
+        if self.loading_overlay.isVisible():
+            self.loading_overlay.setGeometry(0, 0, self.width(), self.height())
 
 
 class GroupSelectionScreen(QWidget):

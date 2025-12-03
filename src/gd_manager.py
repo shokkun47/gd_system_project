@@ -92,7 +92,7 @@ def get_random_gd_theme():
 class MicrophoneStream(object):
     """マイクからの録音ストリームをジェネレーターとして開くクラス。"""
 
-    def __init__(self, rate, chunk, timeout=5):
+    def __init__(self, rate, chunk, timeout=8):
         self._rate = rate
         self._chunk = chunk
         self._timeout = timeout  # タイムアウト設定
@@ -185,7 +185,7 @@ class GDManager:
         self.num_ai_participants = num_ai_participants
         self.conversation_history = [] 
         self.current_phase = "導入" 
-        self.time_limit_minutes = 2
+        self.time_limit_minutes = 20
         self.start_time = time.time() 
         self.turn_count = 0 
         self.current_speaker = "システム" 
@@ -252,10 +252,10 @@ class GDManager:
 
     def _initialize_gd(self):
         """GD開始時の初期メッセージを発言させる"""
-        initial_message = f"GDを始めます。本日のテーマは「{self.gd_theme}」です。皆様、まずは簡単な自己紹介と、今日の議論への意気込みを簡潔に述べていただけますでしょうか？"
+        initial_message = f"グループディスカッションを始めます。本日のテーマは「{self.gd_theme}」です。皆様、まずは簡単な自己紹介と、今日の議論への意気込みを簡潔に述べていただけますでしょうか？"
         self.conversation_history.append({"speaker": "システム", "content": initial_message})
         print(f"[システム]: {initial_message}")
-        #self._synthesize_and_play_system_message(initial_message) 
+        self._synthesize_and_play_system_message(initial_message) 
         self.current_speaker = "システム"
 
     def _generate_ai_prompt(self, ai_id, current_task_for_ai, include_current_history=True):
@@ -316,18 +316,6 @@ class GDManager:
         except Exception as e:
             print(f"エラー: Geminiの呼び出し中に予期せぬエラーが発生しました: {e}")
             return f"（{ai_id}）予期せぬエラーのため発言できません。"
-
-    #def _record_user_input(self, seconds=10):
-        # マイク入力は、process_user_inputメソッド内で非同期で処理されるため、このメソッドはここでは使用しません。
-        # 従来の同期録音の代わりに、ストリーミング認識のロジックがprocess_user_input内で直接実装されます。
-        pass
-
-    #def _transcribe_audio(self, audio_content):
-        """
-        録音された音声データをGoogle Speech-to-Text APIでテキストに変換。
-        このメソッドはストリーミング認識では使用されないため、ここではからの実装とします。
-        """
-        pass
 
     def _synthesize_and_play_ai_response(self, text_to_synthesize, ai_id):
         """AIの応答テキストを音声合成し、再生する。"""
@@ -566,7 +554,7 @@ class GDManager:
         user_text = ""
         try:
             # GD開始後の最初の発言（ターンカウントが0）の場合のみ、タイムアウトを適用しない
-            current_timeout = None if self.turn_count == 0 else 5
+            current_timeout = None if self.turn_count == 0 else 8
 
             with MicrophoneStream(RATE, CHUNK, timeout=current_timeout) as stream:
                 audio_generator = stream.generator()
@@ -590,7 +578,7 @@ class GDManager:
             return False
         
         # ユーザーの発言がなかった場合の処理
-        if not user_text:
+        if not user_text or user_text is None:
             # GD開始後の最初の発言で無発話だった場合、システムが何もせずに待機する
             if self.turn_count == 0:
                 print("[システム]: ユーザーからの発言がありませんでした。お待ちしています。")
