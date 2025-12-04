@@ -407,6 +407,23 @@ class GDScreen(QWidget):
         """)
         self.system_banner.hide()  # 初期状態は非表示
         
+        # AI思考中/発言中バナー（初期状態は非表示）
+        self.ai_status_banner = QLabel("")
+        self.ai_status_banner.setAlignment(Qt.AlignCenter)
+        self.ai_status_banner.setStyleSheet("""
+            QLabel {
+                background-color: #fff3cd;
+                color: #856404;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 8px;
+                border: 1px solid #ffeaa7;
+                border-radius: 5px;
+                margin: 5px;
+            }
+        """)
+        self.ai_status_banner.hide()  # 初期状態は非表示
+        
         # 上部: アバターと残り時間を横並びに配置
         top_layout = QHBoxLayout()
         top_layout.setSpacing(10)
@@ -477,7 +494,7 @@ class GDScreen(QWidget):
         """)
         timer_title.setAlignment(Qt.AlignCenter)
         
-        self.timer_label = QLabel("20:00")
+        self.timer_label = QLabel("00:00")  # 初期値は0:00（GDManagerから設定される）
         self.timer_label.setStyleSheet("""
             QLabel {
                 font-size: 36px;
@@ -562,6 +579,7 @@ class GDScreen(QWidget):
         self.loading_overlay.hide()  # 初期状態は非表示
         
         main_layout.addWidget(self.system_banner)
+        main_layout.addWidget(self.ai_status_banner)
         main_layout.addLayout(top_layout)
         main_layout.addWidget(self.minutes_label)
         main_layout.addWidget(self.minutes_text, stretch=1)
@@ -594,9 +612,14 @@ class GDScreen(QWidget):
             self.avatar_layout.addWidget(avatar)
     
     def update_speaker(self, speaker_name):
-        """発言者を更新"""
-        for name, avatar in self.avatars.items():
-            avatar.set_speaking(name == speaker_name)
+        """発言者を更新（空文字列の場合は音声マークを消す）"""
+        if not speaker_name or speaker_name == "":
+            # 誰もしゃべっていない時は音声マークを消す
+            for name, avatar in self.avatars.items():
+                avatar.set_speaking(False)
+        else:
+            for name, avatar in self.avatars.items():
+                avatar.set_speaking(name == speaker_name)
     
     def update_participant_role(self, participant_name, role):
         """参加者の役職を更新"""
@@ -655,6 +678,20 @@ class GDScreen(QWidget):
     def hide_system_speaking(self):
         """システム発言中バナーを非表示"""
         self.system_banner.hide()
+    
+    def show_ai_thinking(self, ai_name):
+        """AI思考中バナーを表示"""
+        self.ai_status_banner.setText(f"💭 {ai_name}さんが考えています...")
+        self.ai_status_banner.show()
+    
+    def show_ai_speaking(self, ai_name):
+        """AI発言中バナーを表示"""
+        self.ai_status_banner.setText(f"🔊 {ai_name}さんが話しています...")
+        self.ai_status_banner.show()
+    
+    def hide_ai_status(self):
+        """AI状態バナーを非表示"""
+        self.ai_status_banner.hide()
     
     def set_theme(self, theme):
         """テーマラベルにテーマタイトルのみを表示"""
@@ -989,41 +1026,46 @@ class ControlGroupAfterFirstScreen(QWidget):
         self.doc_text.setMarkdown(
             "# グループディスカッションを成功に導く**5つのファシリテーション手法**\n\n"
             "以下の5つの基本動作を意識し、**「声に出して」実践**することで、議論の質は大きく高まります。\n\n"
-            "## 1. 目的の確認\n"
+            "---\n\n"
+            "## 1. 目的の確認\n\n"
             "議論が迷走しないよう、開始直後に**「何を決める場なのか」**を全員で共有しましょう。\n\n"
-            "- **ポイント**: 議論の冒頭で、ゴールや議題を明確に宣言する。\n"
-            "- **使えるフレーズ**:\n"
-            "  - 「**今日の議論のゴール**は、○○を決定することですね」\n"
+            "- **ポイント**: 議論の冒頭で、ゴールや議題を明確に宣言する。\n\n"
+            "- **使えるフレーズ**:\n\n"
+            "  - 「**今日の議論のゴール**は、○○を決定することですね」\n\n"
             "  - 「まずは、**○○について話し合って**いきましょう」\n\n"
-            "## 2. 役割分担\n"
+            "---\n\n"
+            "## 2. 役割分担\n\n"
             "円滑な進行と記録のために、メンバーに**役割**を割り振りましょう。\n\n"
-            "- **ポイント**: 「書記」や「タイムキーパー」などの役割を、**具体的に指名して依頼**する。\n"
-            "- **使えるフレーズ**:\n"
-            "  - 「**役割分担を決めましょう**」\n"
-            "  - 「Aさん、**書記をお願い**できますか？」\n"
+            "- **ポイント**: 「書記」や「タイムキーパー」などの役割を、**具体的に指名して依頼**する。\n\n"
+            "- **使えるフレーズ**:\n\n"
+            "  - 「**役割分担を決めましょう**」\n\n"
+            "  - 「Aさん、**書記をお願い**できますか？」\n\n"
             "  - 「Bさん、**タイムキーパーをお願い**してもいいですか？」\n\n"
-            "## 3. 意見の引き出し\n"
+            "---\n\n"
+            "## 3. 意見の引き出し\n\n"
             "全員が発言しやすい環境を作りましょう。特に、**発言が少ない人への配慮**が重要です。\n\n"
-            "- **ポイント**: 特定の人を指名したり、全体に問いかけたりして、発言を促す。\n"
-            "- **使えるフレーズ**:\n"
-            "  - 「**Cさんは、この点についてどう思いますか？**」（指名）\n"
+            "- **ポイント**: 特定の人を指名したり、全体に問いかけたりして、発言を促す。\n\n"
+            "- **使えるフレーズ**:\n\n"
+            "  - 「**Cさんは、この点についてどう思いますか？**」（指名）\n\n"
             "  - 「**他の方で、違う意見を持っている人はいますか？**」（全体）\n\n"
-            "## 4. 議論の整理\n"
+            "---\n\n"
+            "## 4. 議論の整理\n\n"
             "意見が出っぱなしにならないよう、適度なタイミングで**要約・整理**しましょう。\n\n"
-            "- **ポイント**: 出てきた意見を要約したり、共通点・対立点を整理して伝える。\n"
-            "- **使えるフレーズ**:\n"
-            "  - 「**ここまでの意見をまとめると**、○○案と××案が出ていますね」\n"
+            "- **ポイント**: 出てきた意見を要約したり、共通点・対立点を整理して伝える。\n\n"
+            "- **使えるフレーズ**:\n\n"
+            "  - 「**ここまでの意見をまとめると**、○○案と××案が出ていますね」\n\n"
             "  - 「**つまり**、Aさんの意見は〜〜ということですね」\n\n"
-            "## 5. 時間管理\n"
+            "---\n\n"
+            "## 5. 時間管理\n\n"
             "限られた時間内で結論を出すために、常に**残り時間を意識して共有**しましょう。\n\n"
-            "- **ポイント**: 残り時間をアナウンスし、次のステップ（まとめ等）への移行を促す。\n"
-            "- **使えるフレーズ**:\n"
-            "  - 「**残り5分です。そろそろ意見をまとめていきましょう**」\n"
+            "- **ポイント**: 残り時間をアナウンスし、次のステップ（まとめ等）への移行を促す。\n\n"
+            "- **使えるフレーズ**:\n\n"
+            "  - 「**残り5分です。そろそろ意見をまとめていきましょう**」\n\n"
             "  - 「**時間が半分過ぎました。次の議題に移りましょうか**」\n\n"
             "---\n\n"
-            "★ **アドバイス**\n\n"
-            "ファシリテーションは「**慣れ**」も重要ですが、まずはこれらの基本動作を**恐れずに発言してみる**ことが上達への第一歩です。\n"
-            "次回の議論では、この5つを**最低1回ずつは使ってみる**つもりで取り組んでみてください。"
+            "## ★ アドバイス\n\n"
+            "ファシリテーションは「**慣れ**」も重要ですが、まずはこれらの基本動作を**恐れずに発言してみる**ことが上達への第一歩です。\n\n"
+            "次回の議論では、この5つを**最低1回ずつは使ってみる**つもりで取り組んでみてください。\n\n"
         )
         
         # 2回目GD開始ボタン

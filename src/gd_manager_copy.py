@@ -43,9 +43,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # === 開発モード設定 ===
 # 開発中は True、本番は False に設定
-DEV_MODE = True
+DEV_MODE = False  # 実験用: False
 DEV_DEFAULT_USERNAME = "テスト"  # 開発モード時のデフォルト名字
 DEV_THINKING_SECONDS = 0  # 開発モード時の思考時間（0=スキップ）
+SKIP_INTRO = False  # 実験用: False
 # ==================
 
 # 音声I/Oに関する共通設定
@@ -76,11 +77,11 @@ USED_THEMES_FILE = "used_themes.txt"
 # 実験用固定テーマ
 THEME_ROUND_1 = """学園祭模擬店の売上向上施策
 
-あなたはゼミの模擬店リーダーです。昨年の「焼きそば」は売上が伸び悩み、利益がほとんど出ませんでした。今年の学園祭では「利益を昨年の1.5倍にする」ことが目標です。これから15分間で、メンバー（AI）と議論し、目標達成のための「具体的な施策を1つ」決定してください。※予算には限りがあります。"""
+あなたはゼミの模擬店リーダーです。昨年の「焼きそば」は売上が伸び悩み、利益がほとんど出ませんでした。今年の学園祭では「利益を昨年の1.5倍にする」ことが目標です。これから10分間で、メンバー（AI）と議論し、目標達成のための「具体的な施策を1つ」決定してください。※予算には限りがあります。"""
 
 THEME_ROUND_2 = """オープンキャンパスの来場者数増加施策
 
-あなたはオープンキャンパスの学生リーダーです。近年、高校生の来場者数が減少傾向にあり、大学側から対策を求められています。今年の開催に向けて、「来場者を確実に増やすための目玉企画」を1つ決定してください。これから15分間で、メンバー（AI）と議論し、結論を出してください。※学生スタッフだけで実施できる内容に限ります。"""
+あなたはオープンキャンパスの学生リーダーです。近年、高校生の来場者数が減少傾向にあり、大学側から対策を求められています。今年の開催に向けて、「来場者を確実に増やすための目玉企画」を1つ決定してください。これから10分間で、メンバー（AI）と議論し、結論を出してください。※学生スタッフだけで実施できる内容に限ります。"""
 
 def get_fixed_gd_theme(round_number):
     """
@@ -268,7 +269,6 @@ class MicrophoneStream(object):
                 if not self.speaking and time.time() - self.last_speech_time > self._timeout:
                     self._buff.put(None)
                     self.closed = True
-                    print(f"\n[システム]: 無音時間が{self._timeout}秒続いたため、入力を終了します。")
 
         # 重要: PyAudio のコールバックは必ずタプル (out_data, flag) を返す必要があります
         return (None, pyaudio.paContinue)
@@ -489,6 +489,7 @@ class GDThread(QThread):
     timer_updated = pyqtSignal(int, int)  # 残り時間更新用シグナル (分, 秒)
     feedback_progress = pyqtSignal(str)  # フィードバック生成進捗用シグナル
     role_updated = pyqtSignal(str, str)  # 役割更新用シグナル (参加者名, 役割)
+    system_speaking = pyqtSignal(bool)  # システム発話中フラグ (True=開始, False=終了)
     
     def __init__(self, manager, round_number=1, experiment_group=None):
         super().__init__()
@@ -509,8 +510,10 @@ class GDThread(QThread):
         self._gd_started = True
     
     def start_timer(self):
-        """外部からタイマー開始を要求する"""
+        """外部からタイマー開始を要求する（キックオフメッセージ終了後に呼ばれる）"""
         if not self._timer_started:
+            # タイマー開始時にstart_timeを更新（キックオフメッセージ終了時点から計測）
+            self.manager.start_time = time.time()
             self._timer_started = True
             print("[システム]: タイマーを開始しました")
     
@@ -529,33 +532,29 @@ class GDThread(QThread):
         self._timer_thread = threading.Thread(target=self._update_timer_loop, daemon=True)
         self._timer_thread.start()
         
-        running_gd = True
-        while self._running and running_gd:
-            try:
-                # AI応答を実行（並列化済み）
-                # 発言者の切り替えはprocess_user_input内で行う
-                running_gd = self.manager.process_user_input(self.speaker_changed, gd_thread=self)
-                
-                # 議事録生成を別スレッドで非同期実行（UI応答性向上）
-                def update_minutes_async():
-                    try:
-                        minutes_text = self.manager.get_minutes_text()
-                        self.minutes_updated.emit(minutes_text)
-                    except Exception as e:
-                        print(f"議事録生成エラー: {e}")
-                        self.minutes_updated.emit(f"議事録生成エラー: {e}")
-                
-                minutes_thread = threading.Thread(target=update_minutes_async, daemon=True)
-                minutes_thread.start()
-
-                if not running_gd:
-                    break
-            except KeyboardInterrupt:
-                # Ctrl+C が来た場合はループを抜ける
-                break
-            except Exception as e:
-                print(f"GDThreadエラー: {e}")
-                break
+        # 議事録更新スレッドを開始（継続的に実行）
+        def update_minutes_loop():
+            while self._running:
+                try:
+                    minutes_text = self.manager.get_minutes_text()
+                    self.minutes_updated.emit(minutes_text)
+                except Exception as e:
+                    print(f"議事録生成エラー: {e}")
+                    self.minutes_updated.emit(f"議事録生成エラー: {e}")
+                time.sleep(2)  # 2秒ごとに更新
+        
+        minutes_thread = threading.Thread(target=update_minutes_loop, daemon=True)
+        minutes_thread.start()
+        
+        # 会話ループを実行
+        try:
+            running_gd = self.manager.run_conversation_loop(self.speaker_changed, gd_thread=self)
+        except KeyboardInterrupt:
+            # Ctrl+C が来た場合はループを抜ける
+            running_gd = False
+        except Exception as e:
+            print(f"GDThreadエラー: {e}")
+            running_gd = False
         
         # GD終了後にシステムメッセージを音声で通知
         if self.round_number == 1:
@@ -589,8 +588,9 @@ class GDThread(QThread):
         if not self._running:
             return
         
-        # タイマー開始時刻を記録
-        timer_start_time = time.time()
+        # タイマー開始時点のstart_timeを記録（正確な計測のため）
+        # start_timer()でstart_timeが更新された時点から計測する
+        timer_start_time = self.manager.start_time
         
         while self._running:
             try:
@@ -629,12 +629,13 @@ class GDManager:
         self.gd_theme = gd_theme
         self.num_ai_participants = num_ai_participants
         self.conversation_history = []
-        self.time_limit_minutes = 10 / 60  # 動作確認用: 10秒（通常は15分）
+        self.time_limit_minutes = 10  # 本番用: 10分
         self.start_time = time.time() 
-        self.turn_count = 0 
         self.current_speaker = "システム" 
         self.roles_assigned = False
         self.kickoff_announced = False  # 本格開始アナウンス済みフラグ
+        self.first_speech_done = False  # 最初の発言が完了したかどうか（タイムアウト制御用）
+        self.conversation_active = True  # 会話がアクティブかどうか
         
         # --- APIクライアントの初期化 ---
         try:
@@ -644,11 +645,38 @@ class GDManager:
             # --- Gemini APIの認証とクライアント初期化 ---
             # .envファイルから GOOGLE_API_KEY 環境変数を読み込みます
             genai.configure(api_key=os.getenv("GOOGLE_API_KEY")) # <-- GOOGLE_API_KEY を .env に設定すること
+            
+            # 安全性設定（教育用途に適したレベル: 高レベルの有害コンテンツのみブロック）
+            self.safety_settings = [
+                {
+                    "category": "HARM_CATEGORY_HARASSMENT",
+                    "threshold": "BLOCK_ONLY_HIGH"
+                },
+                {
+                    "category": "HARM_CATEGORY_HATE_SPEECH",
+                    "threshold": "BLOCK_ONLY_HIGH"
+                },
+                {
+                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "threshold": "BLOCK_ONLY_HIGH"
+                },
+                {
+                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                    "threshold": "BLOCK_ONLY_HIGH"
+                },
+            ]
+            
             # GD中・採点用モデル（高速）
-            self.gemini_model = genai.GenerativeModel(GEMINI_MODEL)
+            self.gemini_model = genai.GenerativeModel(
+                GEMINI_MODEL,
+                safety_settings=self.safety_settings
+            )
             # フィードバック生成専用モデル（高精度）
             try:
-                self.gemini_feedback_model = genai.GenerativeModel(GEMINI_FEEDBACK_MODEL)
+                self.gemini_feedback_model = genai.GenerativeModel(
+                    GEMINI_FEEDBACK_MODEL,
+                    safety_settings=self.safety_settings
+                )
             except Exception as e:
                 # フィードバック専用モデルの初期化に失敗した場合は、通常モデルで代用
                 print(f"フィードバック専用モデル({GEMINI_FEEDBACK_MODEL})の初期化に失敗しました。通常モデルで代用します: {e}")
@@ -834,7 +862,7 @@ class GDManager:
         persona_info = self.participants[ai_id]
         
         system_instruction_content = (
-            f"あなたはGDの参加者である{ai_id}です。\n\n"
+            f"あなたはグループディスカッションの参加者である{ai_id}です。\n\n"
             f"【あなたのペルソナ】\n"
             f"{persona_info['persona']}\n\n"
             f"【重要な指示】\n"
@@ -842,17 +870,67 @@ class GDManager:
             f"- 直前の発言（特に他の参加者の発言）を踏まえて、自然な会話の流れを作ってください\n"
             f"- ペルソナに忠実に、人間らしい自然な発言を心がけてください\n"
             f"- 「です・ます」調で話してください\n"
-            f"- 長すぎず短すぎず、適切な長さで発言してください（ペルソナタイプに応じて調整）\n"
-            f"- AIであることを示すような発言は避けてください\n"
+            f"- 発言は2〜3文程度の簡潔な長さにしてください（長すぎる発言は避けてください）\n"
             f"- 会話の流れに沿って、適度に感情や反応を示してください\n"
+            f"- ビジネスや学術的な議論の文脈で、適切で建設的な発言をしてください\n"
+            f"- 役割分担の自己紹介は既に完了しているため、再度「{ai_id}です、よろしくお願いします」や「{ai_id}が{self.participants[ai_id].get('assigned_role', '役割')}を担当します」などの自己紹介や役割の再確認は行わないでください\n"
+            f"- 常に適切で建設的な内容のみを発言し、不適切な表現や内容は避けてください\n"
+            f"- 質問がある場合は、具体的に答えてください\n"
         )
         messages_content.append({"role": "user", "parts": [system_instruction_content]})
         messages_content.append({"role": "model", "parts": ["了解しました。"]}) # AIの初期応答をシミュレート
         
         # 過去の会話履歴（直近の会話を優先的に含める）
         if include_current_history:
-            # 直近10ターン分の会話履歴を含める（文脈理解のため）
-            recent_history = self.conversation_history[-10:] if len(self.conversation_history) > 10 else self.conversation_history
+            # 直近15ターン分の会話履歴を含める（文脈理解のため、10→15に増加）
+            # ただし、会話履歴が長い場合は要約を含める
+            recent_history = self.conversation_history[-15:] if len(self.conversation_history) > 15 else self.conversation_history
+            
+            # 会話履歴が長い場合（15ターン以上）、古い部分をLLMで要約
+            if len(self.conversation_history) > 15:
+                # 古い会話履歴（15ターンより前）を要約
+                older_history = self.conversation_history[:-15]
+                if older_history:
+                    # 古い会話履歴をテキストに変換
+                    older_history_text = "\n".join([
+                        f"[{msg['speaker']}]: {msg['content']}" 
+                        for msg in older_history 
+                        if msg['speaker'] != "システム"
+                    ])
+                    
+                    # LLMで要約を生成
+                    summary_prompt = f"""以下のグループディスカッションの会話履歴を要約してください。
+
+【会話履歴】
+{older_history_text}
+
+【指示】
+- 重要な決定事項、主要な意見、役割分担の情報を簡潔にまとめてください
+- 3〜5文程度の簡潔な要約にしてください
+- 会話の流れと文脈を保持してください
+
+要約:"""
+                    
+                    try:
+                        summary_messages = [
+                            {"role": "user", "parts": [summary_prompt]}
+                        ]
+                        summary_response = self.gemini_model.generate_content(summary_messages)
+                        if summary_response._result.candidates:
+                            summary_text = summary_response.text.strip()
+                            messages_content.append({"role": "user", "parts": [f"【これまでの会話の要約】\n{summary_text}"]})
+                            messages_content.append({"role": "model", "parts": ["了解しました。"]})
+                        else:
+                            # LLM要約に失敗した場合は簡易版を使用
+                            messages_content.append({"role": "user", "parts": [f"（これまでの会話: {len(older_history)}件の発言がありました）"]})
+                            messages_content.append({"role": "model", "parts": ["了解しました。"]})
+                    except Exception as e:
+                        print(f"会話履歴要約エラー: {e}")
+                        # エラー時は簡易版を使用
+                        messages_content.append({"role": "user", "parts": [f"（これまでの会話: {len(older_history)}件の発言がありました）"]})
+                        messages_content.append({"role": "model", "parts": ["了解しました。"]})
+            
+            # 直近の会話履歴を追加
             for msg in recent_history:
                 if msg['speaker'] == "システム": continue # システムメッセージはLLMに渡さない
                 # Geminiでは'user'と'model'が交互にくる必要がある
@@ -871,54 +949,141 @@ class GDManager:
         else:
             task_instruction = current_task_for_ai
         
+        # 参加者情報と役割を取得
+        all_participants_info = []
+        for participant_name, participant_data in self.participants.items():
+            role = participant_data.get('assigned_role', 'なし')
+            if role != 'なし':
+                all_participants_info.append(f"{participant_name}（{role}）")
+            else:
+                all_participants_info.append(participant_name)
+        
         messages_content.append({"role": "user", "parts": [
-            f"【状況】\n"
-            f"残り時間: {remaining_minutes}分\n"
+            f"【GDの状況】\n"
+            f"テーマ: {self.gd_theme.splitlines()[0] if self.gd_theme else '未設定'}\n"
+            f"制限時間: 10分\n"
+            f"参加者: {', '.join(all_participants_info)}\n"
             f"あなたの役割: {self.participants[ai_id].get('assigned_role', 'なし')}\n\n"
             f"【あなたへの指示】\n"
             f"{task_instruction}\n\n"
+            f"【重要な注意事項】\n"
+            f"- 発言は2〜3文程度の簡潔な長さにしてください（長すぎる発言は避けてください）\n"
+            f"- 役割分担の自己紹介は既に完了しているため、再度「{ai_id}です、よろしくお願いします」や「{ai_id}が{self.participants[ai_id].get('assigned_role', '役割')}を担当します」などの自己紹介や役割の再確認は行わないでください\n\n"
             f"上記の指示に従い、ペルソナに忠実に、自然な日本語で発言を生成してください。"
         ]})
     
         return messages_content
     
-    def _get_ai_response_streaming(self, ai_id, task_for_ai, include_current_history=True):
+    def _get_ai_response_streaming(self, ai_id, task_for_ai, include_current_history=True, max_retries=2):
         """
-        特定のAI参加者（ai_id）の発言をストリーミングで生成し、
-        文が完成するごとにyieldする（TTS並列実行用）
+        特定のAI参加者（ai_id）の発言を非ストリーミングモードで生成し、
+        完全な応答を取得してから文単位でyieldする（TTS並列実行用）
+        
+        Args:
+            ai_id: AI参加者のID
+            task_for_ai: タスク指示
+            include_current_history: 会話履歴を含めるか
+            max_retries: 最大リトライ回数
         
         Yields:
             str: 生成された文（句点で区切られた単位）
         """
         messages = self._generate_ai_prompt(ai_id, task_for_ai, include_current_history)
-        print(f" (GDマネージャー -> Geminiへの指示(ストリーミング) for {ai_id}): {task_for_ai[:80]}...")
+        print(f" (GDマネージャー -> Geminiへの指示 for {ai_id}): {task_for_ai[:80]}...")
 
-        try:
-            # ストリーミングモードで生成
-            response_stream = self.gemini_model.generate_content(messages, stream=True)
-            
-            buffer = ""
-            for chunk in response_stream:
-                if chunk.text:
-                    buffer += chunk.text
-                    # 文の区切り（。！？）を検出
-                    while any(delimiter in buffer for delimiter in ['。', '！', '？', '\n']):
-                        for delimiter in ['。', '！', '？', '\n']:
-                            if delimiter in buffer:
-                                idx = buffer.index(delimiter)
-                                sentence = buffer[:idx+1].strip()
-                                buffer = buffer[idx+1:]
-                                if sentence:
-                                    yield sentence
-                                break
-            
-            # 残りのバッファも返す
-            if buffer.strip():
-                yield buffer.strip()
+        # 非ストリーミングモードで試行（ストリーミングモードは使用しない）
+        for retry_count in range(max_retries + 1):
+            try:
+                # 非ストリーミングモードで試行
+                response = self.gemini_model.generate_content(messages, stream=False)
                 
-        except Exception as e:
-            print(f"エラー: Geminiストリーミング中にエラーが発生しました: {e}")
-            yield f"（{ai_id}）応答エラーのため発言できません。"
+                if not response._result.candidates:
+                    print(f"[警告] 非ストリーミングモードで応答がブロックされました。プロンプトを調整して再試行します。")
+                    # プロンプトをより安全な内容に調整して再試行
+                    if retry_count < max_retries:
+                        # プロンプトを簡潔にして再試行
+                        simplified_messages = self._generate_ai_prompt(ai_id, "会話履歴と文脈を理解して、ペルソナに忠実に自然に応答してください。", include_current_history)
+                        messages = simplified_messages
+                        continue
+                    else:
+                        # 最大リトライ回数に達した場合のみフォールバック
+                        fallback_message = self._generate_contextual_fallback(ai_id, task_for_ai)
+                        yield fallback_message
+                        return
+                
+                response_text = response.text.strip()
+                if response_text:
+                    # 完全な応答を取得してから、文単位で分割してyield
+                    # 句点（。！？）で分割し、完全な文のみを返す
+                    import re
+                    # 句点で分割（句点を含む）
+                    sentences = re.split(r'([。！？])', response_text)
+                    # 句点と文を組み合わせて完全な文を作成
+                    complete_sentences = []
+                    for i in range(0, len(sentences) - 1, 2):
+                        if i + 1 < len(sentences):
+                            sentence = (sentences[i] + sentences[i + 1]).strip()
+                            if sentence:
+                                complete_sentences.append(sentence)
+                    # 最後の文（句点がない場合）も追加
+                    if len(sentences) % 2 == 1 and sentences[-1].strip():
+                        complete_sentences.append(sentences[-1].strip())
+                    
+                    # 完全な文のみをyield（途中で終わらないように）
+                    for sentence in complete_sentences:
+                        if sentence:
+                            yield sentence
+                    return  # 成功したので終了
+                else:
+                    # 応答が空の場合、プロンプトを調整して再試行
+                    if retry_count < max_retries:
+                        simplified_messages = self._generate_ai_prompt(ai_id, "会話履歴と文脈を理解して、ペルソナに忠実に自然に応答してください。", include_current_history)
+                        messages = simplified_messages
+                        continue
+                    else:
+                        # 最大リトライ回数に達した場合のみフォールバック
+                        fallback_message = self._generate_contextual_fallback(ai_id, task_for_ai)
+                        yield fallback_message
+                        return
+                            
+            except Exception as e:
+                print(f"[エラー] Gemini呼び出し中にエラーが発生しました (リトライ {retry_count}/{max_retries}): {e}")
+                if retry_count < max_retries:
+                    # リトライを試みる
+                    import time
+                    time.sleep(0.5)  # 少し待ってからリトライ
+                    continue
+                else:
+                    # 最大リトライ回数に達した場合のみフォールバック
+                    fallback_message = self._generate_contextual_fallback(ai_id, task_for_ai)
+                    yield fallback_message
+                    return
+        
+        # すべてのリトライが失敗した場合（通常はここには到達しない）
+        fallback_message = self._generate_contextual_fallback(ai_id, task_for_ai)
+        yield fallback_message
+    
+    def _generate_contextual_fallback(self, ai_id, task_for_ai):
+        """
+        文脈に応じたフォールバックメッセージを生成する
+        
+        Args:
+            ai_id: AI参加者のID
+            task_for_ai: 現在のタスク指示
+        
+        Returns:
+            str: 文脈に応じたフォールバックメッセージ
+        """
+        # 役割分担に関するタスクの場合
+        if "役割分担" in task_for_ai or "役割" in task_for_ai:
+            assigned_role = self.participants[ai_id].get('assigned_role', '')
+            if assigned_role:
+                return f"{assigned_role}を担当します。"
+            else:
+                return "了解しました。"
+        
+        # その他の場合は、会話の流れに沿った簡潔な応答
+        return "了解しました。"
     
     def _get_ai_response(self, ai_id, task_for_ai, include_current_history=True):
         """
@@ -1013,9 +1178,37 @@ class GDManager:
                 format=FORMAT,
                 channels=CHANNELS,
                 rate=RATE,
-                output=True
+                output=True,
+                frames_per_buffer=CHUNK  # バッファサイズを明示的に指定
             )
-            stream.write(audio_content) 
+            
+            # ストリームを明示的に開始（念のため）
+            stream.start_stream()
+            
+            # バッファを満たすための無音データを実際の音声データの先頭に結合
+            # 約150ms分の無音データ（3チャンク分）を先頭に追加
+            silence_chunks = 3
+            silence_data = np.zeros(CHUNK * silence_chunks, dtype=np.int16)
+            audio_data = np.frombuffer(audio_content, dtype=np.int16)
+            # 無音データと実際の音声データを結合
+            combined_audio = np.concatenate([silence_data, audio_data])
+            total_frames = len(combined_audio)
+            
+            # チャンク単位で書き込み（音声の最初が切れるのを防ぐ）
+            
+            for i in range(0, total_frames, CHUNK):
+                # 時間チェック（各チャンク再生前にチェック）
+                if time.time() - self.start_time > self.time_limit_minutes * 60:
+                    print("\n--- GD終了: 制限時間になりました（音声再生中） ---")
+                    self.conversation_active = False
+                    break
+                
+                chunk_data = combined_audio[i:i+CHUNK]
+                # 最後のチャンクがCHUNKサイズに満たない場合はゼロパディング
+                if len(chunk_data) < CHUNK:
+                    chunk_data = np.pad(chunk_data, (0, CHUNK - len(chunk_data)), mode='constant')
+                stream.write(chunk_data.tobytes())
+                
         except Exception as e:
             print(f"音声再生エラー: {e}")
         finally:
@@ -1043,6 +1236,13 @@ class GDManager:
         
         # ストリーミングでLLM応答を生成し、文ごとにTTS送信
         for sentence in self._get_ai_response_streaming(ai_id, task_for_ai):
+            # 時間チェック（ストリーミング生成中）
+            if time.time() - self.start_time > self.time_limit_minutes * 60:
+                print("\n--- GD終了: 制限時間になりました（LLM応答生成中） ---")
+                self.conversation_active = False
+                tts_executor.shutdown(wait=False)
+                return full_text
+            
             full_text += sentence
             # 各文をTTSに並列送信
             future = tts_executor.submit(self._synthesize_tts, sentence, ai_id)
@@ -1053,8 +1253,21 @@ class GDManager:
         # TTS結果を順次取得して再生
         print(f"[{ai_id}]: 音声を再生中...")
         for future in tts_futures:
+            # 時間チェック
+            if time.time() - self.start_time > self.time_limit_minutes * 60:
+                print("\n--- GD終了: 制限時間になりました（音声再生中） ---")
+                self.conversation_active = False
+                tts_executor.shutdown(wait=False)
+                return full_text
+            
             audio_content = future.result()
             if audio_content:
+                # 再生前に再度時間チェック
+                if time.time() - self.start_time > self.time_limit_minutes * 60:
+                    print("\n--- GD終了: 制限時間になりました（音声再生前） ---")
+                    self.conversation_active = False
+                    tts_executor.shutdown(wait=False)
+                    return full_text
                 self._play_audio(audio_content)
         
         tts_executor.shutdown(wait=False)
@@ -1115,17 +1328,72 @@ class GDManager:
                 format=FORMAT,
                 channels=CHANNELS,
                 rate=RATE,
-                output=True
+                output=True,
+                frames_per_buffer=CHUNK  # バッファサイズを明示的に指定
             )
+            
+            # ストリームを明示的に開始（念のため）
+            stream.start_stream()
+            
+            # バッファを満たすための無音データを実際の音声データの先頭に結合
+            # 約150ms分の無音データ（3チャンク分）を先頭に追加
+            silence_chunks = 3
+            silence_data = np.zeros(CHUNK * silence_chunks, dtype=np.int16)
+            audio_data = np.frombuffer(audio_content, dtype=np.int16)
+            # 無音データと実際の音声データを結合
+            combined_audio = np.concatenate([silence_data, audio_data])
+            total_frames = len(combined_audio)
+            
             print(f"[システム]: 音声を再生中...")
-            stream.write(audio_content)
+            
+            # システム発話中の表示を開始（GUIに通知）
+            if hasattr(self, 'gui_window') and self.gui_window and hasattr(self.gui_window, 'gd_screen'):
+                self.gui_window.gd_screen.show_system_speaking()
+            
+            # チャンク単位で書き込み（音声の最初が切れるのを防ぐ）
+            
+            for i in range(0, total_frames, CHUNK):
+                chunk_data = combined_audio[i:i+CHUNK]
+                # 最後のチャンクがCHUNKサイズに満たない場合はゼロパディング
+                if len(chunk_data) < CHUNK:
+                    chunk_data = np.pad(chunk_data, (0, CHUNK - len(chunk_data)), mode='constant')
+                stream.write(chunk_data.tobytes())
+            
+            # 音声再生が完了するまで待機（バッファが空になるまで待つ）
+            stream.stop_stream()
+            stream.close()
+            stream = None  # ストリームを閉じたことを明示
+            # 少し待機して音声再生が完全に終了するのを待つ
+            time.sleep(0.1)
+            
+            # システム発話中の表示を終了（GUIに通知）
+            if hasattr(self, 'gui_window') and self.gui_window and hasattr(self.gui_window, 'gd_screen'):
+                self.gui_window.gd_screen.hide_system_speaking()
+            
             print("再生終了。")
         except Exception as e:
             print(f"システムメッセージ再生エラー: {e}")
+            # エラー時もシステム発話中の表示を終了
+            if hasattr(self, 'gui_window') and self.gui_window and hasattr(self.gui_window, 'gd_screen'):
+                try:
+                    self.gui_window.gd_screen.hide_system_speaking()
+                except Exception:
+                    pass
         finally:
+            # 念のため、finallyブロックでもシステム発話中の表示を終了
+            if hasattr(self, 'gui_window') and self.gui_window and hasattr(self.gui_window, 'gd_screen'):
+                try:
+                    self.gui_window.gd_screen.hide_system_speaking()
+                except Exception:
+                    pass
             if stream:
-                stream.stop_stream()
-                stream.close()
+                try:
+                    if stream.is_active():
+                        stream.stop_stream()
+                    stream.close()
+                except Exception:
+                    # ストリームが既に閉じられている場合は無視
+                    pass
             p_audio.terminate() # PyAudioインスタンスを終了
 
     def add_to_history(self, speaker, content): 
@@ -1138,7 +1406,7 @@ class GDManager:
         LLMによる一括判定方式を使用
         
         Returns:
-            tuple: (各項目のスコア辞書, 合計スコア)
+            tuple: (各項目のスコア辞書, 合計スコア, 検出詳細情報辞書)
         """
         scores = {
             "目的確認": 0,
@@ -1146,6 +1414,15 @@ class GDManager:
             "意見引き出し": 0,
             "議論整理": 0,
             "時間管理": 0
+        }
+        
+        # 検出詳細情報（分析用）
+        detection_details = {
+            "目的確認": {"detected": False, "reason": "", "matching_utterances": []},
+            "役割分担": {"detected": False, "reason": "", "matching_utterances": []},
+            "意見引き出し": {"detected": False, "reason": "", "matching_utterances": []},
+            "議論整理": {"detected": False, "reason": "", "matching_utterances": []},
+            "時間管理": {"detected": False, "reason": "", "matching_utterances": []}
         }
         
         # ユーザーの発言のみを抽出（システムメッセージは除外）
@@ -1156,12 +1433,15 @@ class GDManager:
         
         if not user_utterances:
             print("[採点]: ユーザーの発言がないため、スコアは0点です")
-            return scores, 0
+            return scores, 0, detection_details
         
         print(f"[採点]: {len(user_utterances)}件の発言を分析中...")
         
-        # LLMによる一括判定
-        prompt = f"""以下のユーザーの発言リストから、5つのファシリテーション手法が実施されたかを判定してください。
+        # LLMによる一括判定（検出理由も含む）
+        prompt = f"""あなたは教育用グループディスカッションの評価システムです。以下のユーザーの発言リストから、5つのファシリテーション手法が実施されたかを判定してください。
+
+【注意事項】
+これは教育目的の評価システムです。発言内容は教育的な文脈で評価してください。すべての判定は客観的かつ公平に行ってください。
 
 【判定基準】
 各項目について、該当する発言が1回以上あれば1点、なければ0点と判定してください。
@@ -1190,33 +1470,83 @@ class GDManager:
 {chr(10).join([f"{i+1}. {u}" for i, u in enumerate(user_utterances)])}
 
 【回答形式】
-以下の形式で、必ず数字（0または1）のみで回答してください。他の説明は不要です。
+以下の形式で回答してください。スコアが1点の場合のみ、検出理由と該当する発言番号も記載してください。
 
 目的確認: [0または1]
+目的確認_理由: [スコアが1の場合のみ、検出理由を記載]
+目的確認_発言番号: [スコアが1の場合のみ、該当する発言の番号を記載（複数の場合はカンマ区切り）]
+
 役割分担: [0または1]
+役割分担_理由: [スコアが1の場合のみ、検出理由を記載]
+役割分担_発言番号: [スコアが1の場合のみ、該当する発言の番号を記載（複数の場合はカンマ区切り）]
+
 意見引き出し: [0または1]
+意見引き出し_理由: [スコアが1の場合のみ、検出理由を記載]
+意見引き出し_発言番号: [スコアが1の場合のみ、該当する発言の番号を記載（複数の場合はカンマ区切り）]
+
 議論整理: [0または1]
+議論整理_理由: [スコアが1の場合のみ、検出理由を記載]
+議論整理_発言番号: [スコアが1の場合のみ、該当する発言の番号を記載（複数の場合はカンマ区切り）]
+
 時間管理: [0または1]
+時間管理_理由: [スコアが1の場合のみ、検出理由を記載]
+時間管理_発言番号: [スコアが1の場合のみ、該当する発言の番号を記載（複数の場合はカンマ区切り）]
 """
         
+        # 再試行ロジックを追加（最大3回まで）
+        max_retries = 3
+        response = None
+        for retry_count in range(max_retries):
+            try:
+                # Gemini APIで判定
+                response = self.gemini_model.generate_content(
+                    [{"role": "user", "parts": [prompt]}],
+                    safety_settings=self.safety_settings
+                )
+                
+                if not response._result.candidates:
+                    # 安全性フィルターに引っかかった場合
+                    if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
+                        print(f"[採点エラー]: Geminiからの応答がブロックされました (試行 {retry_count + 1}/{max_retries})")
+                        print(f"Safety feedback: {response.prompt_feedback}")
+                    
+                    # 最後の試行で失敗した場合、フォールバックを使用
+                    if retry_count == max_retries - 1:
+                        print("[採点]: 最大試行回数に達したため、キーワード検出方式に切り替えます")
+                        return self._fallback_keyword_scoring(user_utterances)
+                    
+                    # 少し待ってから再試行
+                    time.sleep(1)
+                    continue
+                
+                # 成功した場合、ループを抜ける
+                break
+                
+            except Exception as e:
+                print(f"[採点エラー]: LLM判定中にエラーが発生しました (試行 {retry_count + 1}/{max_retries}): {e}")
+                
+                # 最後の試行で失敗した場合、フォールバックを使用
+                if retry_count == max_retries - 1:
+                    print("[採点]: 最大試行回数に達したため、キーワード検出方式に切り替えます")
+                    return self._fallback_keyword_scoring(user_utterances)
+                
+                # 少し待ってから再試行
+                time.sleep(1)
+                continue
+        
+        # レスポンスのパース処理
+        if response is None or not hasattr(response, 'text'):
+            print("[採点エラー]: 応答を取得できませんでした")
+            return self._fallback_keyword_scoring(user_utterances)
+        
         try:
-            # Gemini APIで判定
-            response = self.gemini_model.generate_content([
-                {"role": "user", "parts": [prompt]}
-            ])
-            
-            if not response._result.candidates:
-                print(f"[採点エラー]: Geminiからの応答がブロックされました")
-                print(f"Safety feedback: {response.prompt_feedback}")
-                # フォールバック: キーワード検出を使用
-                return self._fallback_keyword_scoring(user_utterances)
-            
             # レスポンスをパース
             response_text = response.text.strip()
             print(f"[採点]: LLM応答を受信: {response_text[:100]}...")
             
-            # 各項目のスコアを抽出
+            # 各項目のスコアと詳細情報を抽出
             lines = response_text.split('\n')
+            current_item = None
             for line in lines:
                 line = line.strip()
                 if ':' in line:
@@ -1224,29 +1554,42 @@ class GDManager:
                     key = key.strip()
                     value = value.strip()
                     
-                    # 数字のみを抽出
-                    import re
-                    match = re.search(r'[01]', value)
-                    if match:
-                        score_value = int(match.group())
-                        if key in scores or key == "目的確認" or key == "目的の確認":
-                            if "目的" in key:
-                                scores["目的確認"] = score_value
-                            elif "役割" in key:
-                                scores["役割分担"] = score_value
-                            elif "意見" in key:
-                                scores["意見引き出し"] = score_value
-                            elif "議論" in key or "整理" in key:
-                                scores["議論整理"] = score_value
-                            elif "時間" in key:
-                                scores["時間管理"] = score_value
+                    # スコアの抽出
+                    if key in ["目的確認", "役割分担", "意見引き出し", "議論整理", "時間管理"]:
+                        current_item = key
+                        import re
+                        match = re.search(r'[01]', value)
+                        if match:
+                            score_value = int(match.group())
+                            scores[current_item] = score_value
+                            detection_details[current_item]["detected"] = (score_value == 1)
+                    
+                    # 検出理由の抽出
+                    elif key == f"{current_item}_理由" and current_item:
+                        detection_details[current_item]["reason"] = value
+                    
+                    # 発言番号の抽出
+                    elif key == f"{current_item}_発言番号" and current_item:
+                        import re
+                        # カンマ区切りの数字を抽出
+                        utterance_numbers = re.findall(r'\d+', value)
+                        for num_str in utterance_numbers:
+                            try:
+                                idx = int(num_str) - 1  # 発言番号は1から始まるため
+                                if 0 <= idx < len(user_utterances):
+                                    detection_details[current_item]["matching_utterances"].append({
+                                        "index": idx + 1,
+                                        "text": user_utterances[idx]
+                                    })
+                            except ValueError:
+                                pass
             
             total_score = sum(scores.values())
             print(f"[採点完了]: 合計 {total_score}/5点")
             for item, score in scores.items():
                 print(f"  - {item}: {score}点")
             
-            return scores, total_score
+            return scores, total_score, detection_details
             
         except Exception as e:
             print(f"[採点エラー]: LLM判定中にエラーが発生しました: {e}")
@@ -1261,7 +1604,7 @@ class GDManager:
             user_utterances: ユーザーの発言リスト
             
         Returns:
-            tuple: (各項目のスコア辞書, 合計スコア)
+            tuple: (各項目のスコア辞書, 合計スコア, 検出詳細情報辞書)
         """
         print("[採点]: フォールバックモード（キーワード検出）を使用")
         
@@ -1273,48 +1616,92 @@ class GDManager:
             "時間管理": 0
         }
         
+        # 検出詳細情報（分析用）
+        detection_details = {
+            "目的確認": {"detected": False, "reason": "キーワード検出による判定", "matching_utterances": []},
+            "役割分担": {"detected": False, "reason": "キーワード検出による判定", "matching_utterances": []},
+            "意見引き出し": {"detected": False, "reason": "キーワード検出による判定", "matching_utterances": []},
+            "議論整理": {"detected": False, "reason": "キーワード検出による判定", "matching_utterances": []},
+            "時間管理": {"detected": False, "reason": "キーワード検出による判定", "matching_utterances": []}
+        }
+        
         # 1. 目的確認
         purpose_keywords = ["ゴール", "目的", "議題", "決定", "話し合い", "議論", "テーマ"]
         purpose_phrases = ["について", "を決める", "を決定", "について話し合"]
-        for utterance in user_utterances:
-            if any(keyword in utterance for keyword in purpose_keywords) or \
-               any(phrase in utterance for phrase in purpose_phrases):
+        for idx, utterance in enumerate(user_utterances):
+            matched_keywords = [kw for kw in purpose_keywords if kw in utterance]
+            matched_phrases = [ph for ph in purpose_phrases if ph in utterance]
+            if matched_keywords or matched_phrases:
                 scores["目的確認"] = 1
+                detection_details["目的確認"]["detected"] = True
+                detection_details["目的確認"]["reason"] = f"キーワード検出: {', '.join(matched_keywords[:3])}"
+                detection_details["目的確認"]["matching_utterances"].append({
+                    "index": idx + 1,
+                    "text": utterance
+                })
                 break
         
         # 2. 役割分担
         role_keywords = ["書記", "タイムキーパー", "役割", "分担", "記録"]
-        for utterance in user_utterances:
-            if any(keyword in utterance for keyword in role_keywords):
+        for idx, utterance in enumerate(user_utterances):
+            matched_keywords = [kw for kw in role_keywords if kw in utterance]
+            if matched_keywords:
                 scores["役割分担"] = 1
+                detection_details["役割分担"]["detected"] = True
+                detection_details["役割分担"]["reason"] = f"キーワード検出: {', '.join(matched_keywords[:3])}"
+                detection_details["役割分担"]["matching_utterances"].append({
+                    "index": idx + 1,
+                    "text": utterance
+                })
                 break
         
         # 3. 意見引き出し
         elicitation_keywords = ["どう思いますか", "意見", "考え", "どうですか", "いかがですか", "どうでしょうか"]
-        for utterance in user_utterances:
-            if any(keyword in utterance for keyword in elicitation_keywords):
+        for idx, utterance in enumerate(user_utterances):
+            matched_keywords = [kw for kw in elicitation_keywords if kw in utterance]
+            if matched_keywords:
                 scores["意見引き出し"] = 1
+                detection_details["意見引き出し"]["detected"] = True
+                detection_details["意見引き出し"]["reason"] = f"キーワード検出: {', '.join(matched_keywords[:3])}"
+                detection_details["意見引き出し"]["matching_utterances"].append({
+                    "index": idx + 1,
+                    "text": utterance
+                })
                 break
         
         # 4. 議論整理
         summary_keywords = ["まとめ", "つまり", "要約", "整理", "まとめると", "まとめて"]
-        for utterance in user_utterances:
-            if any(keyword in utterance for keyword in summary_keywords):
+        for idx, utterance in enumerate(user_utterances):
+            matched_keywords = [kw for kw in summary_keywords if kw in utterance]
+            if matched_keywords:
                 scores["議論整理"] = 1
+                detection_details["議論整理"]["detected"] = True
+                detection_details["議論整理"]["reason"] = f"キーワード検出: {', '.join(matched_keywords[:3])}"
+                detection_details["議論整理"]["matching_utterances"].append({
+                    "index": idx + 1,
+                    "text": utterance
+                })
                 break
         
         # 5. 時間管理
         time_keywords = ["時間", "分", "残り", "あと", "残り時間", "時間が", "時間を"]
         time_phrases = ["そろそろ", "時間がない", "時間配分"]
-        for utterance in user_utterances:
-            if any(keyword in utterance for keyword in time_keywords) or \
-               any(phrase in utterance for phrase in time_phrases):
+        for idx, utterance in enumerate(user_utterances):
+            matched_keywords = [kw for kw in time_keywords if kw in utterance]
+            matched_phrases = [ph for ph in time_phrases if ph in utterance]
+            if matched_keywords or matched_phrases:
                 scores["時間管理"] = 1
+                detection_details["時間管理"]["detected"] = True
+                detection_details["時間管理"]["reason"] = f"キーワード検出: {', '.join(matched_keywords[:3] + matched_phrases[:2])}"
+                detection_details["時間管理"]["matching_utterances"].append({
+                    "index": idx + 1,
+                    "text": utterance
+                })
                 break
         
         total_score = sum(scores.values())
         print(f"[採点完了]: 合計 {total_score}/5点（フォールバック）")
-        return scores, total_score
+        return scores, total_score, detection_details
 
     def generate_simple_feedback_report(self, progress_signal=None, experiment_group=None):
         """
@@ -1332,10 +1719,12 @@ class GDManager:
         if progress_signal:
             progress_signal.emit("基本情報を集計中...")
         
-        # 採点を実行（0/1スコア）
-        scores, total_score = self.calculate_facilitation_scores()
+        # 採点を実行（0/1スコア + 検出詳細情報）
+        scores, total_score, detection_details = self.calculate_facilitation_scores()
         report["ファシリテーション手法スコア"] = scores
         report["合計スコア"] = f"{total_score}/5点"
+        # 検出詳細情報は分析用として保存（参加者には見せない）
+        report["検出詳細情報（分析用）"] = detection_details
         
         # 発言数やGD時間はフィードバックレポートに含めない
         # フェーズ情報もフィードバックレポートに含めない
@@ -1423,10 +1812,11 @@ class GDManager:
         if progress_signal:
             progress_signal.emit("フィードバックレポート生成完了")
         
-        print("\n--- GD簡易フィードバックレポート ---")
-        for key, value in report.items():
-            print(f"{key}: {value}")
-        print("\nレポート生成が完了しました。")
+        # 簡易フィードバックレポートのprintは削除（画面に表示しない）
+        # print("\n--- GD簡易フィードバックレポート ---")
+        # for key, value in report.items():
+        #     print(f"{key}: {value}")
+        # print("\nレポート生成が完了しました。")
         return report
     
     def save_feedback_report(self, report, fullname, round_number=1, experiment_group=None):
@@ -1467,8 +1857,8 @@ class GDManager:
             filepath = os.path.join(feedback_dir, f"{timestamp}.md")
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(f"# GDフィードバックレポート\n\n")
-                f.write(f"**ユーザー名**: {fullname}\n")
-                f.write(f"**実施日時**: {timestamp.replace('_', ' ').replace('-', '/')}\n")
+                f.write(f"**ユーザー名**: {fullname}\n\n")
+                f.write(f"**実施日時**: {timestamp.replace('_', ' ').replace('-', '/')}\n\n")
                 f.write(f"**GDテーマ**: {self.gd_theme.splitlines()[0]}\n\n") # タイトルのみ保存
                 
                 # スコアを表示（最初に表示）
@@ -1476,20 +1866,37 @@ class GDManager:
                     f.write("## ファシリテーション手法スコア\n\n")
                     scores = report["ファシリテーション手法スコア"]
                     for item, score in scores.items():
-                        f.write(f"- **{item}**: {score}点\n")
-                    f.write(f"\n**合計スコア**: {report.get('合計スコア', 'N/A')}\n\n")
+                        f.write(f"- **{item}**: {score}点\n\n")
+                    f.write(f"**合計スコア**: {report.get('合計スコア', 'N/A')}\n\n")
                     f.write("---\n\n")
                 
                 for key, value in report.items():
-                    # スコアは既に表示済みなのでスキップ
-                    if key in ["ファシリテーション手法スコア", "合計スコア"]:
+                    # スコアと検出詳細情報（分析用）は既に表示済み、または表示しない
+                    if key in ["ファシリテーション手法スコア", "合計スコア", "検出詳細情報（分析用）"]:
                         continue
                     f.write(f"## {key}\n\n")
                     if isinstance(value, dict):
                         for k, v in value.items():
-                            f.write(f"- **{k}**: {v}\n")
+                            f.write(f"- **{k}**: {v}\n\n")
+                    elif key == "会話ログ":
+                        # 会話ログは見やすく整形
+                        if isinstance(value, list):
+                            for i, entry in enumerate(value, 1):
+                                f.write(f"{i}. **{entry.get('speaker', '')}**: {entry.get('content', '')}\n\n")
+                        else:
+                            # 文字列の場合、改行を追加
+                            lines = str(value).split('\n')
+                            for line in lines:
+                                if line.strip():
+                                    f.write(f"{line}\n\n")
                     else:
-                        f.write(f"{value}\n")
+                        # フィードバック本文など、長いテキストの場合は段落ごとに改行を追加
+                        text = str(value)
+                        # 段落を検出して改行を追加
+                        paragraphs = text.split('\n\n')
+                        for para in paragraphs:
+                            if para.strip():
+                                f.write(f"{para.strip()}\n\n")
                     f.write("\n")
             print(f"フィードバックを保存しました: {filepath}")
         
@@ -1517,6 +1924,40 @@ class GDManager:
             except Exception as e:
                 print(f"CSV保存エラー: {e}")
         
+        # 分析用JSONファイルを保存（検出詳細情報を含む、実験群・統制群共通）
+        analysis_filepath = None
+        if "検出詳細情報（分析用）" in report:
+            import json
+            analysis_filepath = os.path.join(feedback_dir, f"{timestamp}_analysis.json")
+            try:
+                # 議事録を取得（書記が任命されている場合のみ）
+                minutes_text = ""
+                try:
+                    minutes_text = self.get_minutes_text()
+                except Exception as e:
+                    print(f"議事録取得エラー: {e}")
+                
+                analysis_data = {
+                    "timestamp": timestamp,
+                    "fullname": fullname,
+                    "round_number": round_number,
+                    "experiment_group": group_folder,
+                    "gd_theme": self.gd_theme.splitlines()[0] if hasattr(self, 'gd_theme') else "",
+                    "scores": report["ファシリテーション手法スコア"],
+                    "total_score": sum(report["ファシリテーション手法スコア"].values()),
+                    "detection_details": report["検出詳細情報（分析用）"],
+                    "minutes": minutes_text,  # 議事録を追加（実験参加者には見せない）
+                    "conversation_history": [
+                        {"speaker": msg['speaker'], "content": msg['content']} 
+                        for msg in self.conversation_history
+                    ]
+                }
+                with open(analysis_filepath, "w", encoding="utf-8") as f:
+                    json.dump(analysis_data, f, ensure_ascii=False, indent=2)
+                print(f"分析用JSONを保存しました: {analysis_filepath}")
+            except Exception as e:
+                print(f"分析用JSON保存エラー: {e}")
+        
         # CSVファイルパスを返す（統制群の場合はCSVのみ、実験群の場合はMarkdownファイルパスを返す）
         return csv_filepath if csv_filepath else (filepath if experiment_group == "experimental" else None)
 
@@ -1539,8 +1980,12 @@ class GDManager:
             {"role": "user", "parts": [
                 f"以下の発言は、どのファシリテーションの意図に最も近いですか？\n"
                 f"選択肢: {', '.join(intent_list)}\n"
-                f"発言: {user_text}\n"
-                f"最も近い意図を、選択肢の中から一つだけ返してください。もしどの意図にも当てはまらない場合は、「一般的な発言」と判断してください。選択肢以外の回答はしないでください。"
+                f"発言: {user_text}\n\n"
+                f"【判断基準】\n"
+                f"- 「役割分担」「役割を決める」「書記」「タイムキーパー」などの言葉が含まれている場合は「役割分担」を選択してください\n"
+                f"- 最も近い意図を、選択肢の中から一つだけ返してください\n"
+                f"- 選択肢以外の回答はしないでください\n"
+                f"- 選択肢のテキストをそのまま返してください（説明は不要）"
             ]}
         ]
 
@@ -1548,7 +1993,14 @@ class GDManager:
             response = self.gemini_model.generate_content(messages)
             if response._result.candidates:
                 # LLMの応答から、意図のテキストを取得
-                return response.text.strip()
+                intent = response.text.strip()
+                # 選択肢に含まれるか確認
+                if intent in intent_list:
+                    return intent
+                # 部分一致で確認
+                for candidate_intent in intent_list:
+                    if candidate_intent in intent:
+                        return candidate_intent
         except Exception as e:
             print(f"意図分析エラー: {e}")
 
@@ -1558,6 +2010,7 @@ class GDManager:
         """
         ユーザーのテキストから、特定のAI参加者を特定する。
         複数の呼び方（AI参加者A、Aさん、AI-Aなど）に対応する。
+        （非推奨：LLM検出に移行予定）
         """
         lower_text = text.lower()
         
@@ -1575,6 +2028,202 @@ class GDManager:
         print("(デバッグ用) 該当するAIが見つかりませんでした。")
         return None
     
+    def _detect_mentions_with_llm(self, speech_content, speaker_name):
+        """
+        LLMを使って発言から指名を検出する。
+        
+        Args:
+            speech_content: 発言内容
+            speaker_name: 発言者名
+        
+        Returns:
+            dict: {
+                "mentioned_participants": [参加者名のリスト],  # 指名された参加者（複数可）
+                "is_direct_question": bool,  # 直接的な質問かどうか
+                "mentions_user": bool  # ユーザーが指名されているかどうか
+            }
+        """
+        # 全参加者の名前リストを作成
+        all_participants = list(self.participants.keys())
+        
+        # LLMに指名を検出させる
+        prompt = f"""以下の発言から、特定の参加者への指名があるかどうかを判断してください。
+
+【発言】
+{speech_content}
+
+【発言者】
+{speaker_name}
+
+【参加者名リスト】
+{', '.join(all_participants)}
+
+【指示】
+1. 発言の中で、特定の参加者（発言者自身を除く）に話しかけている、または指名している参加者を特定してください
+2. 発言が直接的な質問（例：「どう思いますか？」「意見を聞かせてください」など）かどうかを判断してください
+3. 以下のJSON形式で返してください：
+{{
+    "mentioned_participants": ["参加者名1", "参加者名2", ...],
+    "is_direct_question": true/false,
+    "mentions_user": true/false
+}}
+
+例1: 「田中さん、どう思いますか？」→ {{"mentioned_participants": ["田中"], "is_direct_question": true, "mentions_user": false}}
+例2: 「田中さんと佐藤さん、意見を聞かせてください」→ {{"mentioned_participants": ["田中", "佐藤"], "is_direct_question": true, "mentions_user": false}}
+例3: 「田中さんも良いアイデアですね」→ {{"mentioned_participants": ["田中"], "is_direct_question": false, "mentions_user": false}}
+例4: 「ユーザーさん、どう思いますか？」→ {{"mentioned_participants": ["{self.username}"], "is_direct_question": true, "mentions_user": true}}
+例5: 指名がない場合→ {{"mentioned_participants": [], "is_direct_question": false, "mentions_user": false}}
+
+指名がない場合は空のリストを返してください。
+JSON以外の説明は不要です。"""
+        
+        try:
+            messages = [
+                {"role": "user", "parts": [prompt]}
+            ]
+            response = self.gemini_model.generate_content(messages)
+            
+            if response._result.candidates:
+                response_text = response.text.strip()
+                # JSONを抽出（```json や ``` で囲まれている場合がある）
+                import json
+                import re
+                
+                # JSON部分を抽出（```json や ``` で囲まれている場合を考慮）
+                json_str = response_text
+                # ```json や ``` で囲まれている場合は除去
+                if '```' in json_str:
+                    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', json_str, re.DOTALL)
+                    if json_match:
+                        json_str = json_match.group(1)
+                else:
+                    # 最初の { から最後の } までを抽出（ネストされたJSONにも対応）
+                    brace_start = json_str.find('{')
+                    if brace_start != -1:
+                        brace_count = 0
+                        brace_end = brace_start
+                        for i in range(brace_start, len(json_str)):
+                            if json_str[i] == '{':
+                                brace_count += 1
+                            elif json_str[i] == '}':
+                                brace_count -= 1
+                                if brace_count == 0:
+                                    brace_end = i + 1
+                                    break
+                        if brace_count == 0:
+                            json_str = json_str[brace_start:brace_end]
+                
+                # JSONをパース
+                result = json.loads(json_str)
+                
+                # 参加者名が実際に存在するか確認
+                valid_participants = []
+                for participant_name in result.get("mentioned_participants", []):
+                    if participant_name in all_participants and participant_name != speaker_name:
+                        valid_participants.append(participant_name)
+                
+                return {
+                    "mentioned_participants": valid_participants,
+                    "is_direct_question": result.get("is_direct_question", False),
+                    "mentions_user": self.username in valid_participants
+                }
+        except Exception as e:
+            print(f"指名検出エラー: {e}")
+        
+        # エラー時はデフォルト値を返す
+        return {
+            "mentioned_participants": [],
+            "is_direct_question": False,
+            "mentions_user": False
+        }
+
+    def _decide_respondents(self, speaker_name, speech_content, depth=0, max_depth=3):
+        """
+        発言に対する反応者を決定する。
+        
+        Args:
+            speaker_name: 発言者名（ユーザー名またはAI名）
+            speech_content: 発言内容
+            depth: 反応の深さ（0=元の発言、1=1回目の反応、2=2回目の反応...）
+            max_depth: 最大反応深度
+        
+        Returns:
+            list: 反応する参加者のリスト（ユーザー名またはAI名のリスト）
+        """
+        # 深度制限チェック
+        if depth >= max_depth:
+            return []
+        
+        # 発言者を除外した全参加者リスト
+        all_participants = [name for name in self.participants.keys() if name != speaker_name]
+        
+        # LLMで指名を検出
+        mention_info = self._detect_mentions_with_llm(speech_content, speaker_name)
+        mentioned_participants = mention_info["mentioned_participants"]
+        is_direct_question = mention_info["is_direct_question"]
+        mentions_user = mention_info["mentions_user"]
+        
+        respondents = []
+        
+        # 指名がある場合の処理
+        if mentioned_participants:
+            # 指名された参加者を反応者に追加
+            for participant_name in mentioned_participants:
+                if participant_name in all_participants:
+                    respondents.append(participant_name)
+            
+            # 直接的な質問の場合：指名された人のみ反応
+            if is_direct_question:
+                return respondents
+            
+            # 直接的な質問でない場合：指名された人 + 他の人も反応可能
+            # ただし、指名された人を優先的に含める
+        
+        # 深さに応じた最大反応者数と確率調整
+        max_respondents = max(1, 3 - depth)  # 深さ0: 3人、深さ1: 2人、深さ2: 1人
+        base_probability = 0.7
+        depth_penalty = depth * 0.15  # 深さ1つにつき15%減
+        adjusted_probability = max(0.2, base_probability - depth_penalty)  # 最低20%
+        
+        # AI参加者とユーザーを分けて処理
+        ai_participants = [ai for ai in all_participants if ai != self.username]
+        
+        # 既に指名された参加者を除外
+        remaining_ai_participants = [ai for ai in ai_participants if ai not in respondents]
+        
+        # AI参加者の選択
+        ai_with_activity = [(ai, self.participants[ai].get("activity_level", 0.5)) for ai in remaining_ai_participants]
+        ai_with_activity.sort(key=lambda x: x[1], reverse=True)  # 積極性が高い順にソート
+        
+        # 残りの反応者枠を計算（指名された人を除いた数）
+        remaining_slots = max_respondents - len(respondents)
+        
+        for ai_name, activity_level in ai_with_activity:
+            if len(respondents) >= max_respondents:
+                break
+            
+            # 積極性レベルと深さに基づく確率で選択
+            probability = activity_level * adjusted_probability
+            if random.random() < probability:
+                respondents.append(ai_name)
+        
+        # ユーザーが指名されている場合、またはユーザーも反応者候補に含める（深さが浅い場合のみ）
+        if mentions_user and self.username in all_participants:
+            # ユーザーが指名されている場合は確実に追加
+            if self.username not in respondents:
+                respondents.append(self.username)
+        elif depth < 2 and self.username in all_participants and len(respondents) < max_respondents:
+            # ユーザーが指名されていない場合、確率で追加
+            user_probability = adjusted_probability * 0.3  # ユーザーの反応確率は低め
+            if random.random() < user_probability:
+                respondents.append(self.username)
+        
+        # 誰も発言しない場合は、積極派を強制的に選択（深さが浅い場合のみ）
+        if not respondents and ai_with_activity and depth < 2:
+            respondents = [ai_with_activity[0][0]]  # 最も積極的なAI
+        
+        return respondents
+    
     def _parse_role_assignment(self, user_text):
         """
         LLMを使ってユーザーの発言から役割分担の指示を解析する
@@ -1587,7 +2236,7 @@ class GDManager:
         ai_names = [ai_id for ai_id in self.participants.keys() if ai_id != self.username]
         
         # LLMに役割分担の指示を解析させる
-        prompt = f"""以下の発言から、役割分担の指示があるかどうかを判断してください。
+        prompt = f"""以下の発言から、役割分担の指示を解析してください。
 
 【発言】
 {user_text}
@@ -1600,16 +2249,21 @@ class GDManager:
 {', '.join(ai_names)}
 
 【指示】
-1. 発言に役割分担の指示が含まれているか判断してください
-2. 具体的に「（参加者名）は（役割）をお願いします」のような指定がある場合、以下のJSON形式で返してください：
+1. 発言を注意深く読み、参加者名と役割の対応関係を正確に抽出してください
+2. 音声認識の誤り（例：「初期って」→「書記」など）を考慮し、文脈から正しい役割を判断してください
+3. 具体的に「（参加者名）は（役割）をお願いします」や「（参加者名）に（役割）をやってもらう」のような指定がある場合、以下のJSON形式で返してください：
 {{"参加者名": "役割名"}}
 
 例1: 「田中さんは書記をお願いします」→ {{"田中": "書記"}}
 例2: 「鈴木さんにタイムキーパーを任せます」→ {{"鈴木": "タイムキーパー"}}
-例3: 「役割を決めましょう」→ {{}}
+例3: 「山口さん、書記で近藤さんタイムキーパーやってもらってもいいですか？」→ {{"山口": "書記", "近藤": "タイムキーパー"}}
+例4: 「役割を決めましょう」→ {{}}
 
-役割分担の指示がない場合、または具体的な指定がない場合は空のJSON {{}} を返してください。
-JSON以外の説明は不要です。"""
+【重要な注意事項】
+- 音声認識の誤りを考慮し、文脈から正しい役割を判断してください
+- 参加者名と役割が明確に対応している場合のみJSONを返してください
+- 役割分担の指示がない場合、または具体的な指定がない場合は空のJSON {{}} を返してください
+- JSON以外の説明は不要です。"""
         
         try:
             messages = [
@@ -1655,6 +2309,76 @@ JSON以外の説明は不要です。"""
         base_wait = 3.0 - (activity_level * 3.0)  # 0.6秒〜2.4秒
         wait_time = base_wait + random.uniform(0, 1.0)  # ランダム要素を追加
         return max(0.3, wait_time)  # 最低0.3秒
+
+    def _wait_for_user_speech(self, timeout=8, speaker_changed_signal=None):
+        """
+        ユーザーの発言を待つ（タイムアウト付き）。
+        
+        Args:
+            timeout: タイムアウト時間（秒）。Noneの場合は無期限待機。
+            speaker_changed_signal: 発言者変更シグナル
+        
+        Returns:
+            str: ユーザーの発言内容。発言がない場合は空文字列。
+        """
+        print("\n[ユーザー]: マイク入力待ち...")
+        
+        # 音声入力開始時のコールバック
+        def on_speaking_start():
+            if speaker_changed_signal:
+                speaker_changed_signal.emit(self.username)
+            self.current_speaker = self.username
+
+        client = speech.SpeechClient()
+        
+        # PyAudioインスタンスをメソッド内で作成
+        p_audio = pyaudio.PyAudio() 
+        
+        language_code = "ja-JP"
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=RATE,
+            language_code=language_code,
+            enable_automatic_punctuation=True,
+        )
+        streaming_config = speech.StreamingRecognitionConfig(
+            config=config,
+            interim_results=True
+        )
+
+        user_text = ""
+        try:
+            # MicrophoneStreamにp_audioとspeaking_callbackを渡す
+            with MicrophoneStream(RATE, CHUNK, timeout=timeout, p_audio=p_audio, speaking_callback=on_speaking_start) as stream:
+                audio_generator = stream.generator()
+                requests = (
+                    speech.StreamingRecognizeRequest(audio_content=content)
+                    for content in audio_generator
+                )
+
+                responses = client.streaming_recognize(streaming_config, requests)
+                print("認識中...")
+                for response in responses:
+                    # 時間チェック（音声認識中）
+                    if time.time() - self.start_time > self.time_limit_minutes * 60:
+                        print("\n--- GD終了: 制限時間になりました（音声認識中） ---")
+                        self.conversation_active = False
+                        return ""
+                    
+                    if not response.results or not response.results[0].alternatives:
+                        continue
+                    result = response.results[0]
+                    if result.is_final:
+                        user_text = result.alternatives[0].transcript.strip()
+                        print(f"\n[あなた]: {user_text}")
+                        break
+        except Exception as e:
+            print(f"音声認識エラーが発生しました: {e}")
+            return ""
+        finally:
+            p_audio.terminate() # 処理終了後に必ず解放
+
+        return user_text if user_text else ""
 
     def _process_ai_response_to_speech(self, speaker_name, speech_content, speaker_changed_signal=None, gd_thread=None, is_chain_reaction=False):
         """
@@ -1744,6 +2468,322 @@ JSON以外の説明は不要です。"""
         
         return True
 
+    def _process_speech(self, speaker_name, speech_content, speaker_changed_signal=None, 
+                       gd_thread=None, depth=0, max_depth=3):
+        """
+        発言を処理し、その発言に対する反応を連鎖的に処理する。
+        
+        Args:
+            speaker_name: 発言者名（ユーザー名またはAI名）
+            speech_content: 発言内容
+            speaker_changed_signal: 発言者変更シグナル
+            gd_thread: GDスレッドへの参照
+            depth: 反応の深さ（0=元の発言、1=1回目の反応、2=2回目の反応...）
+            max_depth: 最大反応深度（無限ループ防止）
+        
+        Returns:
+            bool: 処理が成功したかどうか
+        """
+        # 制限時間チェック
+        if time.time() - self.start_time > self.time_limit_minutes * 60:
+            print("\n--- GD終了: 制限時間になりました ---")
+            return False
+        
+        # 1. 発言を履歴に追加
+        self.add_to_history(speaker_name, speech_content)
+        self.current_speaker = speaker_name
+        
+        # 2. 自己紹介の処理（ユーザー発言の場合のみ、初回のみ、SKIP_INTROがFalseの場合のみ）
+        # 役割分担の処理より先に実行（自己紹介のターンでは役割分担をスキップするため）
+        if speaker_name == self.username and not self.first_speech_done and not SKIP_INTRO:
+            # 全AI参加者が自己紹介（固定メッセージで高速化）
+            all_ai_participants = [ai for ai in self.participants.keys() if ai != self.username]
+            
+            # TTS合成を並列実行（高速化）
+            ai_introductions = {}
+            with ThreadPoolExecutor(max_workers=len(all_ai_participants)) as executor:
+                future_to_ai = {
+                    executor.submit(self._synthesize_tts, f"{ai_name}です、よろしくお願いします。", ai_name): ai_name
+                    for ai_name in all_ai_participants
+                }
+                
+                for future in as_completed(future_to_ai):
+                    ai_name = future_to_ai[future]
+                    try:
+                        audio_content = future.result()
+                        ai_introductions[ai_name] = {
+                            "text": f"{ai_name}です、よろしくお願いします。",
+                            "audio": audio_content
+                        }
+                    except Exception as e:
+                        print(f"[エラー] {ai_name}のTTS合成に失敗: {e}")
+                        ai_introductions[ai_name] = {
+                            "text": f"{ai_name}です、よろしくお願いします。",
+                            "audio": None
+                        }
+            
+            # 音声再生は順番に実行（重複を避けるため）
+            for ai_name in all_ai_participants:
+                if time.time() - self.start_time > self.time_limit_minutes * 60:
+                    return False
+                
+                if speaker_changed_signal:
+                    speaker_changed_signal.emit(ai_name)
+                self.current_speaker = ai_name
+                
+                intro_data = ai_introductions.get(ai_name, {})
+                response_text = intro_data.get("text", f"{ai_name}です、よろしくお願いします。")
+                audio_content = intro_data.get("audio")
+                
+                # 音声再生
+                if audio_content:
+                    self._play_audio(audio_content)
+                else:
+                    # TTS合成に失敗した場合は再試行
+                    self._synthesize_and_play_ai_response(response_text, ai_name)
+                
+                self.add_to_history(ai_name, response_text)
+                time.sleep(0.2)  # 待機時間を短縮（0.3秒→0.2秒）
+                # 自己紹介に対して反応しない（自己紹介は簡潔に終える）
+            
+            # 自己紹介完了後、本格開始アナウンス（確実に実行）
+            # 音声マークを消す（システムメッセージ再生前）
+            self.current_speaker = None
+            if speaker_changed_signal:
+                speaker_changed_signal.emit("")  # 空文字で音声マークを消す
+            
+            if not self.kickoff_announced and not SKIP_INTRO:
+                if self.time_limit_minutes < 1:
+                    time_display = f"{int(self.time_limit_minutes * 60)}秒"
+                else:
+                    time_display = f"{int(self.time_limit_minutes)}分"
+                kickoff_message = f"今回のファシリテーターは{self.username}さんです。制限時間は{time_display}です。それでは、テーマについて議論を始めてください。"
+                self.conversation_history.append({"speaker": "システム", "content": kickoff_message})
+                print(f"[システム]: {kickoff_message}")
+                self._synthesize_and_play_system_message(kickoff_message)
+                self.kickoff_announced = True
+                
+                # タイマーを開始（システムメッセージ再生後に開始）
+                if gd_thread:
+                    gd_thread.start_timer()
+            
+            self.first_speech_done = True
+            return True
+        
+        # 3. 役割分担の処理（ユーザー発言の場合のみ、自己紹介完了後、役割が未割り当ての場合のみ）
+        if speaker_name == self.username and not self.roles_assigned and self.first_speech_done:
+            role_assignments = self._parse_role_assignment(speech_content)
+            
+            # ユーザーが具体的に役割を指定した場合
+            if role_assignments:
+                for ai_name, role in role_assignments.items():
+                    self.participants[ai_name]["assigned_role"] = role
+                    if gd_thread is not None and hasattr(gd_thread, "role_updated"):
+                        gd_thread.role_updated.emit(ai_name, role)
+                self.roles_assigned = True
+                # 役割が割り当てられたAIに発言させる
+                for ai_name, role in role_assignments.items():
+                    task = f"ファシリテーターが「{ai_name}さんは{role}をお願いします」と指定しました。あなたは{role}という役割を担うことを確認してください。発言は簡潔にしてください。"
+                    if speaker_changed_signal:
+                        speaker_changed_signal.emit(ai_name)
+                    self.current_speaker = ai_name
+                    llm_response_text = self._synthesize_and_play_ai_response_streaming(ai_name, task)
+                    self.add_to_history(ai_name, llm_response_text)
+                    time.sleep(0.3)
+                    # 役割確認発言に対しては反応しない（役割確認は簡潔に終える）
+                return True
+            
+            # 役割分担の意図があるかLLMで判断
+            user_intent = self._analyze_user_intent(speech_content)
+            print(f"[役割分担検出]: ユーザー発言「{speech_content}」→ 意図: {user_intent}")
+            if user_intent == "役割分担":
+                print(f"[役割分担処理]: 役割分担を検出しました。自動的に役割を割り当てます。")
+                # 自動的に書記とタイムキーパーを割り当て
+                all_ai_participants = [ai for ai in self.participants.keys() if ai != self.username]
+                role_candidates = ["タイムキーパー", "書記"]
+                random.shuffle(role_candidates)
+                
+                for i, ai_name in enumerate(all_ai_participants):
+                    if i < len(role_candidates):
+                        assigned_role = role_candidates[i]
+                        self.participants[ai_name]["assigned_role"] = assigned_role
+                        if gd_thread is not None and hasattr(gd_thread, "role_updated"):
+                            gd_thread.role_updated.emit(ai_name, assigned_role)
+                        task = f"ファシリテーターが役割分担を促しました。あなたは「{assigned_role}」という役割を担うことを自己提案してください。発言は簡潔にしてください。"
+                        if speaker_changed_signal:
+                            speaker_changed_signal.emit(ai_name)
+                        self.current_speaker = ai_name
+                        llm_response_text = self._synthesize_and_play_ai_response_streaming(ai_name, task)
+                        self.add_to_history(ai_name, llm_response_text)
+                        time.sleep(0.3)
+                        # 役割提案発言に対しては反応しない（役割提案は簡潔に終える）
+                self.roles_assigned = True
+                return True
+        
+        # 4. 反応者を決定
+        respondents = self._decide_respondents(speaker_name, speech_content, depth=depth, max_depth=max_depth)
+        
+        if not respondents:
+            return True  # 反応者がいない場合は正常終了
+        
+        # 5. 各参加者が反応
+        for respondent_name in respondents:
+            if time.time() - self.start_time > self.time_limit_minutes * 60:
+                print("\n--- GD終了: 制限時間になりました ---")
+                return False
+            
+            if respondent_name == self.username:
+                # ユーザーが反応する場合（短いタイムアウトで待機）
+                user_response = self._wait_for_user_speech(timeout=5, speaker_changed_signal=speaker_changed_signal)
+                if user_response:
+                    # ユーザーの反応を処理（再帰的に）
+                    if not self._process_speech(self.username, user_response, speaker_changed_signal, gd_thread, depth=depth+1, max_depth=max_depth):
+                        return False
+            else:
+                # AIが反応する場合
+                # ユーザーが反応者に選ばれていない場合、AI発言前に短いタイムアウトでユーザー入力をチェック
+                if self.username not in respondents:
+                    # 短いタイムアウト（1秒）でユーザー入力をチェック
+                    user_interruption = self._wait_for_user_speech(timeout=1.0, speaker_changed_signal=speaker_changed_signal)
+                    if user_interruption:
+                        # ユーザーが割り込んだ場合、その発言を優先処理
+                        # 現在の連鎖反応は一旦中断し、ユーザー発言を処理
+                        if not self._process_speech(self.username, user_interruption, speaker_changed_signal, gd_thread, depth=depth+1, max_depth=max_depth):
+                            return False
+                        # ユーザー発言の処理が終わった後、元の連鎖反応は継続せず、新しい流れに移行
+                        return True
+                
+                # 積極性レベルに基づく待ち時間
+                wait_time = self._get_speech_timing(respondent_name)
+                time.sleep(wait_time)
+                
+                # AI発言開始を通知
+                if speaker_changed_signal:
+                    speaker_changed_signal.emit(respondent_name)
+                self.current_speaker = respondent_name
+                
+                # タスクを生成
+                task_for_ai = f"{speaker_name}さんの発言を踏まえ、会話履歴と文脈を理解して、ペルソナに忠実に自然に応答してください。"
+                
+                # ストリーミングで応答生成＋TTS並列実行
+                llm_response_text = self._synthesize_and_play_ai_response_streaming(respondent_name, task_for_ai)
+                self.add_to_history(respondent_name, llm_response_text)
+                time.sleep(0.3)
+                
+                # AIの発言に対して、さらに反応（再帰的に）
+                # AI発言後にもユーザー入力をチェックするため、_process_speech内でチェックされる
+                if not self._process_speech(respondent_name, llm_response_text, speaker_changed_signal, gd_thread, depth=depth+1, max_depth=max_depth):
+                    return False
+        
+        return True
+
+    def _process_silence(self, speaker_changed_signal=None, gd_thread=None):
+        """
+        沈黙時（タイムアウト時）にAIが自発的に発言する。
+        
+        Returns:
+            bool: 処理が成功したかどうか
+        """
+        # 制限時間チェック
+        if time.time() - self.start_time > self.time_limit_minutes * 60:
+            print("\n--- GD終了: 制限時間になりました ---")
+            return False
+        
+        # 積極性レベルが高いAIを選択
+        all_ai_participants = [ai for ai in self.participants.keys() if ai != self.username]
+        ai_with_activity = [(ai, self.participants[ai].get("activity_level", 0.5)) for ai in all_ai_participants]
+        ai_with_activity.sort(key=lambda x: x[1], reverse=True)  # 積極性が高い順にソート
+        
+        # 積極派が自発的に発言（確率的に選択）
+        ai_participants_to_respond = []
+        for ai_name, activity_level in ai_with_activity:
+            # 積極性レベルに基づいて発言確率を決定
+            if random.random() < activity_level:
+                ai_participants_to_respond.append(ai_name)
+                if len(ai_participants_to_respond) >= 1:  # 1人だけ発言
+                    break
+        
+        # 誰も発言しない場合は、積極派を強制的に選択
+        if not ai_participants_to_respond and ai_with_activity:
+            ai_participants_to_respond = [ai_with_activity[0][0]]  # 最も積極的なAI
+        
+        if not ai_participants_to_respond:
+            return True
+        
+        task_for_ai = "会話が少し途切れているようです。会話履歴と文脈を理解して、ペルソナに忠実に自然に発言してください。議論を進めるための提案や、テーマに関する意見を述べても構いません。\n\n【重要な注意事項】\n- 発言は2〜3文程度の簡潔な長さにしてください（長すぎる発言は避けてください）\n- 役割分担の自己紹介は既に完了しているため、再度自己紹介や役割の再確認は行わないでください"
+        
+        # AIが自発的に発言
+        for ai_name in ai_participants_to_respond:
+            if time.time() - self.start_time > self.time_limit_minutes * 60:
+                return False
+            
+            # AI発言開始を通知
+            if speaker_changed_signal:
+                speaker_changed_signal.emit(ai_name)
+            self.current_speaker = ai_name
+            llm_response_text = self._synthesize_and_play_ai_response_streaming(ai_name, task_for_ai)
+            self.add_to_history(ai_name, llm_response_text)
+            time.sleep(0.3)
+            
+            # AIの発言に対して、反応の連鎖処理
+            if not self._process_speech(ai_name, llm_response_text, speaker_changed_signal, gd_thread, depth=0, max_depth=3):
+                return False
+        
+        return True
+
+    def run_conversation_loop(self, speaker_changed_signal=None, gd_thread=None):
+        """
+        会話ループを実行する。ターン制ではなく、発言イベントベースで進行。
+        
+        Args:
+            speaker_changed_signal: 発言者変更シグナル
+            gd_thread: GDスレッドへの参照
+        
+        Returns:
+            bool: 処理が成功したかどうか（時間切れの場合はFalse）
+        """
+        # 自己紹介とキックオフをスキップする場合（テスト用）
+        if SKIP_INTRO:
+            print("[システム]: 自己紹介とキックオフをスキップしてGDを開始します。")
+            self.first_speech_done = True
+            self.kickoff_announced = True
+            # タイマーを開始
+            if gd_thread is not None:
+                gd_thread.start_timer()
+            # 会話履歴にキックオフメッセージを追加（議事録生成のため）
+            if self.time_limit_minutes < 1:
+                time_display = f"{int(self.time_limit_minutes * 60)}秒"
+            else:
+                time_display = f"{int(self.time_limit_minutes)}分"
+            kickoff_message = f"今回のファシリテーターは{self.username}さんです。制限時間は{time_display}です。それでは、テーマについて議論を始めてください。"
+            self.conversation_history.append({"speaker": "システム", "content": kickoff_message})
+        
+        # メインループ
+        while self.conversation_active:
+            # 制限時間チェック
+            if time.time() - self.start_time > self.time_limit_minutes * 60:
+                print("\n--- GD終了: 制限時間になりました ---")
+                return False
+            
+            # ユーザー発言待ち（最初の発言のみタイムアウトなし）
+            timeout = None if not self.first_speech_done else 8
+            user_text = self._wait_for_user_speech(timeout=timeout, speaker_changed_signal=speaker_changed_signal)
+            
+            if user_text:
+                # ユーザー発言を処理（反応の連鎖処理も含む）
+                if not self._process_speech(self.username, user_text, speaker_changed_signal, gd_thread, depth=0, max_depth=3):
+                    return False
+            else:
+                # 沈黙時：AIが自発的に発言（最初の発言でない場合のみ）
+                if self.first_speech_done:
+                    if not self._process_silence(speaker_changed_signal, gd_thread):
+                        return False
+                else:
+                    # 最初の発言で無発話だった場合、待機
+                    print("[システム]: ユーザーからの発言がありませんでした。お待ちしています。")
+        
+        return True
+
     def process_user_input(self, speaker_changed_signal=None, gd_thread=None):
         """
         ユーザーからの音声をストリーミングで認識し、GDの進行を管理する。
@@ -1785,8 +2825,8 @@ JSON以外の説明は不要です。"""
 
         user_text = ""
         try:
-            # GD開始後の最初の発言（ターンカウントが0）の場合のみ、タイムアウトを適用しない
-            current_timeout = None if self.turn_count == 0 else 8
+            # GD開始後の最初の発言の場合のみ、タイムアウトを適用しない
+            current_timeout = None if not self.first_speech_done else 8
             # MicrophoneStreamにp_audioとspeaking_callbackを渡す
             with MicrophoneStream(RATE, CHUNK, timeout=current_timeout, p_audio=p_audio, speaking_callback=on_speaking_start) as stream:
                 audio_generator = stream.generator()
@@ -1798,6 +2838,12 @@ JSON以外の説明は不要です。"""
                 responses = client.streaming_recognize(streaming_config, requests)
                 print("認識中...")
                 for response in responses:
+                    # 時間チェック（音声認識中）
+                    if time.time() - self.start_time > self.time_limit_minutes * 60:
+                        print("\n--- GD終了: 制限時間になりました（音声認識中） ---")
+                        self.conversation_active = False
+                        return ""
+                    
                     if not response.results or not response.results[0].alternatives:
                         continue
                     result = response.results[0]
@@ -1814,7 +2860,7 @@ JSON以外の説明は不要です。"""
         # ユーザーの発言がなかった場合の処理
         if not user_text or user_text is None:
             # GD開始後の最初の発言で無発話だった場合、システムが何もせずに待機する
-            if self.turn_count == 0:
+            if not self.first_speech_done:
                 print("[システム]: ユーザーからの発言がありませんでした。お待ちしています。")
                 return True # ユーザーが発話するまでこの関数を再度呼び出す
             
@@ -1838,7 +2884,7 @@ JSON以外の説明は不要です。"""
             if not ai_participants_to_respond and ai_with_activity:
                 ai_participants_to_respond = [ai_with_activity[0][0]]  # 最も積極的なAI
             
-            task_for_ai = "会話が少し途切れているようです。会話履歴と文脈を理解して、ペルソナに忠実に自然に発言してください。議論を進めるための提案や、テーマに関する意見を述べても構いません。"
+            task_for_ai = "会話が少し途切れているようです。会話履歴と文脈を理解して、ペルソナに忠実に自然に発言してください。議論を進めるための提案や、テーマに関する意見を述べても構いません。\n\n【重要な注意事項】\n- 発言は2〜3文程度の簡潔な長さにしてください（長すぎる発言は避けてください）\n- 役割分担の自己紹介は既に完了しているため、再度自己紹介や役割の再確認は行わないでください"
             # AI応答のループ（ストリーミング版を使用）
             for ai_name in ai_participants_to_respond:
                 # AI発言開始を通知
@@ -1856,12 +2902,18 @@ JSON以外の説明は不要です。"""
 
         # ユーザーの発言があった場合の処理
         self.add_to_history(self.username, user_text)
-        self.turn_count += 1
         self.current_speaker = self.username
         
         # 役割分担の処理（ユーザーが具体的に指定した場合、または役割分担がまだ行われていない場合）
         if not self.roles_assigned:
-            role_assignments = self._parse_role_assignment(user_text)
+            # 並列処理で高速化: 役割分担解析と意図分析を同時に実行
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                role_future = executor.submit(self._parse_role_assignment, user_text)
+                intent_future = executor.submit(self._analyze_user_intent, user_text)
+                
+                # 両方の結果を取得
+                role_assignments = role_future.result()
+                user_intent = intent_future.result()
             
             # ユーザーが具体的に役割を指定した場合
             if role_assignments:
@@ -1890,8 +2942,8 @@ JSON以外の説明は不要です。"""
                         return False  # 時間切れの場合は終了
                 return True
             
-            # 役割分担の意図があるかLLMで判断
-            user_intent = self._analyze_user_intent(user_text)
+            # 役割分担の意図があるかLLMで判断（既に並列処理で取得済み）
+            
             if user_intent == "役割分担":
                 # 自動的に書記とタイムキーパーを割り当て
                 all_ai_participants = [ai for ai in self.participants.keys() if ai != self.username]
@@ -1926,7 +2978,7 @@ JSON以外の説明は不要です。"""
         ai_participants_to_respond = []
         task_for_ai = ""
 
-        if self.turn_count == 1:
+        if not self.first_speech_done:
             all_ai_participants = [ai for ai in self.participants.keys() if ai != self.username]
             ai_participants_to_respond = all_ai_participants
             task_for_ai = "ファシリテーターが自己紹介を終えました。あなたも「（名前）です、よろしくお願いします」のように、名前と一言だけで簡潔に自己紹介してください。ペルソナや意気込みは述べず、挨拶だけにしてください。"
@@ -1964,8 +3016,8 @@ JSON以外の説明は不要です。"""
             return False
         
         # 各AI参加者を処理
-        # 自己紹介時（turn_count==1）はLLM応答生成を並列化して高速化
-        if self.turn_count == 1 and len(ai_participants_to_respond) > 2:
+        # 自己紹介時はLLM応答生成を並列化して高速化
+        if not self.first_speech_done and len(ai_participants_to_respond) > 2:
             print(f"[システム]: {len(ai_participants_to_respond)}名のAI自己紹介を並列生成中...")
             
             # LLM応答を並列生成
@@ -2020,15 +3072,15 @@ JSON以外の説明は不要です。"""
                     time_display = f"{int(self.time_limit_minutes * 60)}秒"
                 else:
                     time_display = f"{int(self.time_limit_minutes)}分"
-                kickoff_message = f"今回のファシリテーターは{self.username}さんです。テーマについて議論を始めてください。制限時間は{time_display}です。"
+                kickoff_message = f"今回のファシリテーターは{self.username}さんです。制限時間は{time_display}です。それでは、テーマについて議論を始めてください。"
                 self.conversation_history.append({"speaker": "システム", "content": kickoff_message})
                 print(f"[システム]: {kickoff_message}")
                 self._synthesize_and_play_system_message(kickoff_message)
                 self.kickoff_announced = True
-            
-            # 自己紹介が終わったのでタイマーを開始
-            if gd_thread:
-                gd_thread.start_timer()
+                
+                # タイマーを開始（システムメッセージ再生後に開始）
+                if gd_thread:
+                    gd_thread.start_timer()
         else:
             # 通常時は順次処理（ストリーミング＋TTS並列で高速化）
             # 積極性レベルに基づいて発話順序を決定（積極派が先に発言）
@@ -2054,8 +3106,8 @@ JSON以外の説明は不要です。"""
                 time.sleep(0.3)  # 次の発言者への切り替え時間を短縮
                 
                 # AIが発言した後、他のAIが反応する（自己紹介や役割分担の場合はスキップ）
-                # 自己紹介（turn_count==1）や役割分担（roles_assigned==False）以外の場合のみ、他のAIが反応する
-                if self.turn_count > 1:
+                # 自己紹介や役割分担以外の場合のみ、他のAIが反応する
+                if self.first_speech_done:
                     if not self._process_ai_response_to_speech(ai_name, llm_response_text, speaker_changed_signal, gd_thread, is_chain_reaction=False):
                         return False  # 時間切れの場合は終了
 
@@ -2154,15 +3206,6 @@ if __name__ == "__main__":
     # GUIウィンドウを作成
     gui_window = GDReportWindow()
     
-    # 開発モード: 自動的にデフォルト名字でスタート（実験群/統制群選択は手動）
-    # 開発モードでは自動開始を無効化（実験群/統制群選択が必要なため）
-    # if DEV_MODE:
-    #     print(f"[開発モード] デフォルト名字「{DEV_DEFAULT_USERNAME}」で自動開始します")
-    #     # 少し遅延させてGUI初期化を待つ
-    #     from PySide6.QtCore import QTimer
-    #     QTimer.singleShot(500, lambda: gui_window.user_input_screen.username_input.setText(DEV_DEFAULT_USERNAME))
-    #     QTimer.singleShot(600, lambda: gui_window.user_input_screen._on_start_clicked())
-    
     # GDManagerとスレッドを保持するコンテナ
     class GDContext:
         def __init__(self):
@@ -2187,11 +3230,21 @@ if __name__ == "__main__":
             gui_window.set_manager(context.manager)
             
             # --- GUIの初期表示（メインスレッドで実行） ---
+            # GD画面に遷移（自動開始時も含む）
+            gui_window.stacked_widget.setCurrentIndex(3)  # GD画面へ
+            QApplication.processEvents()  # UI更新を確実に実行
+            
             # テーマタイトルを画面・議事録エリアに表示
             gui_window.set_theme(theme)
             gui_window.gd_screen.set_theme(theme)
             # ユーザーの役職をGUIに反映
             gui_window.gd_screen.update_participant_role(username, "ファシリテーター")
+            # タイマーの初期値を設定
+            initial_minutes = int(context.manager.time_limit_minutes)
+            initial_seconds = int(round((context.manager.time_limit_minutes - initial_minutes) * 60))
+            gui_window.gd_screen.update_timer(initial_minutes, initial_seconds)
+            # 議事録をクリア（前回のGDの議事録が残らないようにする）
+            gui_window.set_minutes("")
             
             # まずローディングを消し、GD画面を完全に表示してからシステム発話を行う
             gui_window.gd_screen.hide_loading()
@@ -2199,7 +3252,17 @@ if __name__ == "__main__":
             
             # GD開始時の初期メッセージ（自己紹介の案内など）を再生
             # ※この処理中はTTSでメインスレッドがブロックされるが、すでにローディングは消えている
-            context.manager._initialize_gd()
+            # SKIP_INTROがTrueの場合はスキップ
+            if not SKIP_INTRO:
+                context.manager._initialize_gd()
+            else:
+                # SKIP_INTROがTrueの場合でも、会話履歴には追加（議事録生成のため）
+                theme_title = context.manager.gd_theme.splitlines()[0] if context.manager.gd_theme else ""
+                initial_message = (
+                    f"グループディスカッションを始めます。本日のテーマは『{theme_title}』です。"
+                    f"まず、{context.manager.username}さんから順番に、お名前と一言だけ簡単に自己紹介をお願いします。"
+                )
+                context.manager.conversation_history.append({"speaker": "システム", "content": initial_message})
             
             # GDThreadを作成（ラウンド番号と実験群/統制群を渡す）
             context.gd_thread = GDThread(
@@ -2247,6 +3310,13 @@ if __name__ == "__main__":
 
     # GUIウィンドウを表示
     gui_window.show()
+    
+    # テスト用: 自動的にGDを開始（会話部分のテスト用）
+    if DEV_MODE:
+        print(f"[テストモード] 自動的にGDを開始します（ユーザー名: {DEV_DEFAULT_USERNAME}, ラウンド: 1）")
+        # 少し遅延させてGUI初期化を待つ
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(1000, lambda: on_start_gd_with_username_and_round(DEV_DEFAULT_USERNAME, 1))
 
     # アプリケーション終了時にスレッド停止と履歴リセットを行うハンドラを登録
     def _on_about_to_quit():
