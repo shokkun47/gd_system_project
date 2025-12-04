@@ -4,11 +4,13 @@ Zoom風GD UIコンポーネント
 """
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
-    QPushButton, QTextEdit, QFrame, QStackedWidget, QGraphicsOpacityEffect
+    QPushButton, QTextEdit, QFrame, QStackedWidget, QGraphicsOpacityEffect,
+    QSlider, QProgressBar
 )
 from PySide6.QtCore import Qt, Signal as pyqtSignal, QTimer
 from PySide6.QtGui import QPixmap, QFont
 import os
+import threading
 
 # アバターヘルパーをインポート
 try:
@@ -205,11 +207,6 @@ class UserInputScreen(QWidget):
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignCenter)
         
-        # タイトル
-        title = QLabel("グループディスカッションシミュレーター")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; margin-bottom: 30px;")
-        title.setAlignment(Qt.AlignCenter)
-        
         # 説明
         description = QLabel("名字と名前を入力してください")
         description.setStyleSheet("font-size: 16px; margin-bottom: 20px;")
@@ -278,7 +275,6 @@ class UserInputScreen(QWidget):
         self.start_button.clicked.connect(self._on_start_clicked)
         
         layout.addStretch()
-        layout.addWidget(title)
         layout.addWidget(description)
         layout.addWidget(lastname_label, alignment=Qt.AlignCenter)
         layout.addWidget(self.lastname_input, alignment=Qt.AlignCenter)
@@ -790,7 +786,8 @@ class GroupSelectionScreen(QWidget):
 class GDStartConfirmScreen(QWidget):
     """GD開始確認画面（警告表示）"""
     confirmed = pyqtSignal()  # 確認ボタンが押されたときに発火
-    cancelled = pyqtSignal()  # キャンセルボタンが押されたときに発火
+    cancelled = pyqtSignal()  # キャンセルボタンが押されたときに発火（互換性のため残す）
+    thinking_timeout = pyqtSignal()  # 思考時間終了時に発火
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -816,6 +813,44 @@ class GDStartConfirmScreen(QWidget):
         """)
         self.message_label.setAlignment(Qt.AlignCenter)
         
+        # 思考時間カウントダウンラベル
+        self.countdown_label = QLabel()
+        self.countdown_label.setStyleSheet("""
+            QLabel {
+                font-size: 48px;
+                font-weight: bold;
+                color: #e74c3c;
+                margin-top: 20px;
+                margin-bottom: 10px;
+            }
+        """)
+        self.countdown_label.setAlignment(Qt.AlignCenter)
+        self.countdown_label.hide()  # 初期状態は非表示
+        
+        # 思考時間メッセージラベル
+        self.thinking_message_label = QLabel()
+        self.thinking_message_label.setStyleSheet("font-size: 16px; margin-bottom: 20px;")
+        self.thinking_message_label.setAlignment(Qt.AlignCenter)
+        self.thinking_message_label.hide()  # 初期状態は非表示
+        
+        # アナウンスメッセージラベル
+        self.announcement_label = QLabel()
+        self.announcement_label.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                color: #27ae60;
+                font-weight: bold;
+                padding: 10px;
+                background-color: #d5f4e6;
+                border: 1px solid #27ae60;
+                border-radius: 5px;
+                margin-bottom: 20px;
+            }
+        """)
+        self.announcement_label.setAlignment(Qt.AlignCenter)
+        self.announcement_label.setWordWrap(True)
+        self.announcement_label.hide()  # 初期状態は非表示
+        
         # ボタンレイアウト
         button_layout = QHBoxLayout()
         button_layout.setSpacing(20)
@@ -835,46 +870,84 @@ class GDStartConfirmScreen(QWidget):
             QPushButton:hover {
                 background-color: #229954;
             }
+            QPushButton:disabled {
+                background-color: #bdc3c7;
+                color: #7f8c8d;
+            }
         """)
         self.confirm_button.clicked.connect(self.confirmed.emit)
         
-        # キャンセルボタン
-        self.cancel_button = QPushButton("キャンセル")
-        self.cancel_button.setStyleSheet("""
-            QPushButton {
-                font-size: 18px;
-                padding: 12px 30px;
-                background-color: #95a5a6;
-                color: white;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #7f8c8d;
-            }
-        """)
-        self.cancel_button.clicked.connect(self.cancelled.emit)
-        
         button_layout.addWidget(self.confirm_button)
-        button_layout.addWidget(self.cancel_button)
         
         layout.addStretch()
         layout.addWidget(warning_label)
         layout.addWidget(self.message_label, alignment=Qt.AlignCenter)
+        layout.addWidget(self.countdown_label)
+        layout.addWidget(self.thinking_message_label)
+        layout.addWidget(self.announcement_label)
         layout.addSpacing(30)
         layout.addLayout(button_layout)
         layout.addStretch()
         
         self.setLayout(layout)
+        
+        # 思考時間タイマー
+        self.thinking_timer = QTimer()
+        self.thinking_timer.timeout.connect(self._update_thinking_countdown)
+        self.remaining_seconds = 0
+        self.thinking_active = False
     
     def set_message(self, message):
         """警告メッセージを設定"""
         self.message_label.setText(message)
+        # 画面表示時に「開始する」ボタンを即座に無効化
+        self.confirm_button.setEnabled(False)
+    
+    def start_thinking_time(self, seconds=120):
+        """思考時間を開始（2分間、開発モードの場合は10秒）"""
+        self.remaining_seconds = seconds
+        self.thinking_active = True
+        self.countdown_label.show()
+        self.thinking_message_label.hide()  # メッセージラベルを非表示（文字を消す）
+        self.confirm_button.setEnabled(False)  # 思考時間中は開始ボタンを無効化
+        self.announcement_label.hide()
+        self._update_thinking_countdown()
+        self.thinking_timer.start(1000)  # 1秒ごとに更新
+    
+    def _update_thinking_countdown(self):
+        """思考時間カウントダウンを更新"""
+        if self.remaining_seconds > 0:
+            minutes = self.remaining_seconds // 60
+            seconds = self.remaining_seconds % 60
+            self.countdown_label.setText(f"{minutes:02d}:{seconds:02d}")
+            self.remaining_seconds -= 1
+        else:
+            # 思考時間終了
+            self.thinking_timer.stop()
+            self.thinking_active = False
+            self.countdown_label.hide()
+            self.thinking_message_label.hide()
+            self.announcement_label.setText("思考時間が終了しました。「開始する」ボタンを押して、グループディスカッションを開始してください。")
+            self.announcement_label.show()
+            self.confirm_button.setEnabled(True)  # 開始ボタンを有効化
+            # アナウンスシグナルを発火
+            self.thinking_timeout.emit()
+    
+    def stop_thinking_time(self):
+        """思考時間を停止"""
+        if self.thinking_timer.isActive():
+            self.thinking_timer.stop()
+        self.thinking_active = False
+        self.countdown_label.hide()
+        self.thinking_message_label.hide()
+        self.announcement_label.hide()
+        self.confirm_button.setEnabled(True)
 
 
 class FeedbackScreen(QWidget):
     """画面4: フィードバック表示"""
     next_gd_requested = pyqtSignal()  # 2回目GD開始用のシグナル（実験群のみ）
+    reading_timeout = pyqtSignal()  # 読書時間終了時に発火
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -902,6 +975,25 @@ class FeedbackScreen(QWidget):
         """)
         self.progress_label.setAlignment(Qt.AlignCenter)
         self.progress_label.hide()  # 初期状態は非表示
+        
+        # 読書時間カウントダウンラベル
+        self.reading_countdown_label = QLabel()
+        self.reading_countdown_label.setStyleSheet("""
+            QLabel {
+                font-size: 36px;
+                font-weight: bold;
+                color: #e74c3c;
+                margin-bottom: 10px;
+            }
+        """)
+        self.reading_countdown_label.setAlignment(Qt.AlignCenter)
+        self.reading_countdown_label.hide()  # 初期状態は非表示
+        
+        # 読書時間メッセージラベル
+        self.reading_message_label = QLabel()
+        self.reading_message_label.setStyleSheet("font-size: 16px; margin-bottom: 10px;")
+        self.reading_message_label.setAlignment(Qt.AlignCenter)
+        self.reading_message_label.hide()  # 初期状態は非表示
         
         # フィードバック表示エリア
         self.feedback_text = QTextEdit()
@@ -944,10 +1036,49 @@ class FeedbackScreen(QWidget):
         
         layout.addWidget(title)
         layout.addWidget(self.progress_label)
+        layout.addWidget(self.reading_countdown_label)
+        layout.addWidget(self.reading_message_label)
         layout.addWidget(self.feedback_text)
         layout.addLayout(button_layout)
         
         self.setLayout(layout)
+        
+        # 読書時間タイマー
+        self.reading_timer = QTimer()
+        self.reading_timer.timeout.connect(self._update_reading_countdown)
+        self.reading_remaining_seconds = 0
+        self.reading_active = False
+    
+    def start_reading_time(self, seconds=300):
+        """読書時間を開始（5分間、開発モードの場合は10秒）"""
+        self.reading_remaining_seconds = seconds
+        self.reading_active = True
+        self.reading_countdown_label.show()
+        self.reading_message_label.show()
+        # 時間に応じてメッセージを変更（アナウンス文言に合わせる）
+        if seconds <= 30:
+            self.reading_message_label.setText("AIからのフィードバックレポートを10秒間読み、2回目のグループディスカッションに備えてください。")
+        else:
+            self.reading_message_label.setText("AIからのフィードバックレポートを5分間読み、2回目のグループディスカッションに備えてください。")
+        self.next_gd_button.hide()  # 読書時間中はボタンを非表示
+        self._update_reading_countdown()
+        self.reading_timer.start(1000)  # 1秒ごとに更新
+    
+    def _update_reading_countdown(self):
+        """読書時間カウントダウンを更新"""
+        if self.reading_remaining_seconds > 0:
+            minutes = self.reading_remaining_seconds // 60
+            seconds = self.reading_remaining_seconds % 60
+            self.reading_countdown_label.setText(f"{minutes:02d}:{seconds:02d}")
+            self.reading_remaining_seconds -= 1
+        else:
+            # 読書時間終了
+            self.reading_timer.stop()
+            self.reading_active = False
+            self.reading_countdown_label.hide()
+            self.reading_message_label.hide()
+            # 自動的に2回目GD開始確認画面へ遷移
+            self.reading_timeout.emit()
     
     def set_feedback(self, feedback_dict, show_next_button=False):
         """フィードバックを設定"""
@@ -973,13 +1104,21 @@ class FeedbackScreen(QWidget):
         exp_feedback = feedback_dict.get("実験群用フィードバック", "")
         if exp_feedback:
             feedback_md += "## フィードバック（Good / More / Action）\n\n"
-            feedback_md += exp_feedback.strip() + "\n"
+            # 改行を適切に処理して読みやすくする
+            # 段落ごとに改行を追加（連続する改行を2つに統一）
+            import re
+            # まず、既存の改行を保持しつつ、段落間の改行を統一
+            formatted_feedback = re.sub(r'\n{3,}', '\n\n', exp_feedback.strip())
+            # セクション見出し（## や ###）の前後に改行を追加
+            formatted_feedback = re.sub(r'\n(##\s+)', r'\n\n\1', formatted_feedback)
+            formatted_feedback = re.sub(r'(##\s+[^\n]+)\n', r'\1\n\n', formatted_feedback)
+            feedback_md += formatted_feedback + "\n\n"
         
         # Markdownとしてレンダリング
         self.feedback_text.setMarkdown(feedback_md)
         
-        # 2回目GD開始ボタンの表示/非表示を制御
-        if show_next_button:
+        # 2回目GD開始ボタンの表示/非表示を制御（読書時間中は非表示）
+        if show_next_button and not self.reading_active:
             self.next_gd_button.show()
         else:
             self.next_gd_button.hide()
@@ -992,9 +1131,802 @@ class FeedbackScreen(QWidget):
         self.feedback_text.setMarkdown("")
 
 
+class MicrophoneCheckScreen(QWidget):
+    """マイクチェック画面"""
+    microphone_check_completed = pyqtSignal()  # マイクチェック完了シグナル
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 全画面表示に対応したレイアウト
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # 中央コンテナ（最大幅を制限して全画面でも見やすく）
+        container = QWidget()
+        container.setMaximumWidth(1400)
+        container_layout = QVBoxLayout()
+        container_layout.setSpacing(40)
+        container_layout.setContentsMargins(100, 80, 100, 80)
+        
+        container_layout.addStretch()
+        
+        # タイトル
+        title_label = QLabel("マイクチェック")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 40px;
+                font-weight: bold;
+                color: #2c3e50;
+                padding: 30px;
+            }
+        """)
+        title_label.setAlignment(Qt.AlignCenter)
+        container_layout.addWidget(title_label)
+        
+        # 説明文
+        description_label = QLabel("マイクの動作を確認してください")
+        description_label.setStyleSheet("""
+            QLabel {
+                font-size: 24px;
+                color: #34495e;
+                padding: 15px;
+            }
+        """)
+        description_label.setAlignment(Qt.AlignCenter)
+        container_layout.addWidget(description_label)
+        
+        container_layout.addSpacing(30)
+        
+        # 指定文言表示エリア（大きなフレーム）
+        phrase_frame = QFrame()
+        phrase_frame.setStyleSheet("""
+            QFrame {
+                background-color: #ecf0f1;
+                border: 3px solid #3498db;
+                border-radius: 10px;
+                padding: 60px;
+            }
+        """)
+        phrase_frame.setMaximumWidth(1200)  # 最大幅を制限して全画面でも見やすく
+        phrase_frame_layout = QVBoxLayout()
+        phrase_frame_layout.setSpacing(40)
+        phrase_frame_layout.setContentsMargins(40, 40, 40, 40)
+        
+        # 指定文言表示（初期状態でも表示）
+        self.phrase_label = QLabel("「音声テストを開始」ボタンを押してください")
+        self.phrase_label.setStyleSheet("""
+            QLabel {
+                font-size: 28px;
+                font-weight: bold;
+                color: #2c3e50;
+                padding: 40px;
+                background-color: white;
+                border: 2px solid #bdc3c7;
+                border-radius: 8px;
+                min-height: 120px;
+            }
+        """)
+        self.phrase_label.setAlignment(Qt.AlignCenter)
+        self.phrase_label.setWordWrap(True)
+        phrase_frame_layout.addWidget(self.phrase_label)
+        
+        # リアルタイム音量表示
+        volume_layout = QVBoxLayout()
+        volume_layout.setSpacing(10)
+        volume_label = QLabel("音量レベル")
+        volume_label.setStyleSheet("font-size: 18px; color: #34495e; font-weight: bold;")
+        volume_label.setAlignment(Qt.AlignCenter)
+        volume_layout.addWidget(volume_label)
+        
+        self.volume_progress = QProgressBar()
+        self.volume_progress.setMinimum(0)
+        self.volume_progress.setMaximum(100)
+        self.volume_progress.setValue(0)
+        self.volume_progress.setFixedHeight(60)
+        self.volume_progress.setStyleSheet("""
+            QProgressBar {
+                border: 3px solid #bdc3c7;
+                border-radius: 10px;
+                text-align: center;
+                font-size: 20px;
+                font-weight: bold;
+                background-color: white;
+            }
+            QProgressBar::chunk {
+                background-color: #2ecc71;
+                border-radius: 7px;
+            }
+        """)
+        self.volume_progress.setFormat("%p%")
+        volume_layout.addWidget(self.volume_progress)
+        phrase_frame_layout.addLayout(volume_layout)
+        
+        phrase_frame.setLayout(phrase_frame_layout)
+        container_layout.addWidget(phrase_frame)
+        
+        container_layout.addSpacing(30)
+        
+        # 音声チェックボタン
+        self.audio_test_button = QPushButton("音声テストを開始")
+        self.audio_test_button.setStyleSheet("""
+            QPushButton {
+                font-size: 24px;
+                padding: 25px 80px;
+                background-color: #3498db;
+                color: white;
+                border: none;
+                border-radius: 10px;
+                min-width: 300px;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+            QPushButton:disabled {
+                background-color: #bdc3c7;
+                color: #7f8c8d;
+            }
+        """)
+        self.audio_test_button.clicked.connect(self._start_audio_test)
+        container_layout.addWidget(self.audio_test_button, alignment=Qt.AlignCenter)
+        
+        container_layout.addSpacing(20)
+        
+        # ステータス表示
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("""
+            QLabel {
+                font-size: 20px;
+                color: #7f8c8d;
+                padding: 20px;
+            }
+        """)
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setWordWrap(True)
+        container_layout.addWidget(self.status_label)
+        
+        container_layout.addSpacing(30)
+        
+        # 次へボタン（最初は無効）
+        self.next_button = QPushButton("次へ")
+        self.next_button.setStyleSheet("""
+            QPushButton {
+                font-size: 24px;
+                padding: 25px 80px;
+                background-color: #e67e22;
+                color: white;
+                border: none;
+                border-radius: 10px;
+                min-width: 300px;
+            }
+            QPushButton:hover {
+                background-color: #d35400;
+            }
+            QPushButton:disabled {
+                background-color: #bdc3c7;
+                color: #7f8c8d;
+            }
+        """)
+        self.next_button.setEnabled(False)
+        self.next_button.clicked.connect(self.microphone_check_completed.emit)
+        container_layout.addWidget(self.next_button, alignment=Qt.AlignCenter)
+        
+        container_layout.addStretch()
+        container.setLayout(container_layout)
+        
+        # 中央揃え
+        main_layout.addStretch()
+        main_layout.addWidget(container, alignment=Qt.AlignCenter)
+        main_layout.addStretch()
+        
+        self.setLayout(main_layout)
+        
+        self.audio_checked = False
+        self.recording = False
+        
+        # 指定文言（テスト用）
+        self.test_phrase = "これは音声テストです"
+        
+        # タイマー
+        self.volume_update_timer = QTimer()
+        self.volume_update_timer.timeout.connect(self._update_volume_display)
+    
+    def _start_audio_test(self):
+        """音声テストを開始（リアルタイム音量表示 + 指定文言チェック）"""
+        self.phrase_label.setText(f'「{self.test_phrase}」\n\nと話してください')
+        self.phrase_label.show()
+        self.status_label.setText("マイクに向かって指定の文言を話してください...")
+        self.audio_test_button.setEnabled(False)
+        self.recording = True
+        
+        # リアルタイム音量表示を開始
+        self.volume_update_timer.start(50)  # 50msごとに更新
+        
+        # 音声テストを実行（非同期）
+        from threading import Thread
+        thread = Thread(target=self._record_and_check_audio_with_phrase, daemon=True)
+        thread.start()
+    
+    def _update_volume_display(self):
+        """リアルタイム音量表示を更新"""
+        if not self.recording:
+            return
+        
+        try:
+            import pyaudio
+            import numpy as np
+            
+            RATE = 16000
+            CHUNK = int(RATE / 10)
+            FORMAT = pyaudio.paInt16
+            CHANNELS = 1
+            
+            if not hasattr(self, '_p_audio') or self._p_audio is None:
+                self._p_audio = pyaudio.PyAudio()
+                self._stream = self._p_audio.open(
+                    format=FORMAT,
+                    channels=CHANNELS,
+                    rate=RATE,
+                    input=True,
+                    frames_per_buffer=CHUNK
+                )
+            
+            try:
+                data = self._stream.read(CHUNK, exception_on_overflow=False)
+                audio_data = np.frombuffer(data, dtype=np.int16)
+                max_volume = np.max(np.abs(audio_data))
+                
+                # 音量を0-100%に正規化（32767が最大値）
+                volume_percent = min(100, int((max_volume / 32767) * 100))
+                
+                # プログレスバーを更新
+                self.volume_progress.setValue(volume_percent)
+                
+                # 閾値チェック（1000以上でOK）
+                if max_volume > 1000:
+                    self.volume_progress.setStyleSheet("""
+                        QProgressBar {
+                            border: 3px solid #bdc3c7;
+                            border-radius: 10px;
+                            text-align: center;
+                            font-size: 16px;
+                            font-weight: bold;
+                        }
+                        QProgressBar::chunk {
+                            background-color: #2ecc71;
+                            border-radius: 7px;
+                        }
+                    """)
+                else:
+                    self.volume_progress.setStyleSheet("""
+                        QProgressBar {
+                            border: 3px solid #bdc3c7;
+                            border-radius: 10px;
+                            text-align: center;
+                            font-size: 16px;
+                            font-weight: bold;
+                        }
+                        QProgressBar::chunk {
+                            background-color: #e74c3c;
+                            border-radius: 7px;
+                        }
+                    """)
+            except:
+                pass
+        except Exception as e:
+            print(f"音量表示更新エラー: {e}")
+    
+    def _record_and_check_audio_with_phrase(self):
+        """指定文言を録音してチェック（音声認識使用）"""
+        try:
+            import pyaudio
+            import numpy as np
+            import wave
+            import os
+            from google.cloud import speech_v1p1beta1 as speech
+            
+            RATE = 16000
+            CHUNK = int(RATE / 10)
+            FORMAT = pyaudio.paInt16
+            CHANNELS = 1
+            RECORD_SECONDS = 5  # 5秒間録音
+            
+            p_audio = pyaudio.PyAudio()
+            stream = p_audio.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                input=True,
+                frames_per_buffer=CHUNK
+            )
+            
+            frames = []
+            for _ in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
+                if not self.recording:
+                    break
+                data = stream.read(CHUNK, exception_on_overflow=False)
+                frames.append(data)
+            
+            stream.stop_stream()
+            stream.close()
+            p_audio.terminate()
+            
+            # 録音を停止
+            self.recording = False
+            self.volume_update_timer.stop()
+            if hasattr(self, '_stream'):
+                try:
+                    self._stream.stop_stream()
+                    self._stream.close()
+                except:
+                    pass
+            if hasattr(self, '_p_audio'):
+                try:
+                    self._p_audio.terminate()
+                    self._p_audio = None
+                except:
+                    pass
+            
+            # 音量レベルをチェック
+            audio_data = np.frombuffer(b''.join(frames), dtype=np.int16)
+            max_volume = np.max(np.abs(audio_data))
+            
+            # 音声認識で指定文言をチェック
+            audio_content = b''.join(frames)
+            
+            # 一時ファイルに保存
+            temp_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "audio_data", "audio_check_temp.wav")
+            os.makedirs(os.path.dirname(temp_file), exist_ok=True)
+            
+            wf = wave.open(temp_file, 'wb')
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(p_audio.get_sample_size(FORMAT))
+            wf.setframerate(RATE)
+            wf.writeframes(audio_content)
+            wf.close()
+            
+            # 音声認識を実行
+            speech_client = speech.SpeechClient()
+            with open(temp_file, 'rb') as audio_file:
+                content = audio_file.read()
+            
+            config = speech.RecognitionConfig(
+                encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                sample_rate_hertz=RATE,
+                language_code='ja-JP'
+            )
+            audio = speech.RecognitionAudio(content=content)
+            
+            response = speech_client.recognize(config=config, audio=audio)
+            
+            # 認識結果をチェック
+            recognized_text = ""
+            if response.results:
+                recognized_text = response.results[0].alternatives[0].transcript
+            
+            # UIスレッドで更新
+            from PySide6.QtCore import QTimer
+            
+            # 閾値チェックと文言チェック
+            phrase_match = self.test_phrase in recognized_text or recognized_text in self.test_phrase
+            volume_ok = max_volume > 1000
+            
+            if phrase_match and volume_ok:
+                QTimer.singleShot(0, lambda: self._on_audio_check_success())
+            elif not volume_ok:
+                QTimer.singleShot(0, lambda: self._on_audio_check_failed("音量が低すぎます。もう少し大きな声で話してください。"))
+            else:
+                QTimer.singleShot(0, lambda: self._on_audio_check_failed(f"指定の文言が認識されませんでした。認識結果: {recognized_text}"))
+            
+            # 一時ファイルを削除
+            try:
+                os.remove(temp_file)
+            except:
+                pass
+                
+        except Exception as e:
+            self.recording = False
+            self.volume_update_timer.stop()
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._on_audio_check_error(str(e)))
+    
+    def _on_audio_check_success(self):
+        """音声チェック成功"""
+        self.audio_checked = True
+        self.status_label.setText("✓ マイクチェック完了: マイクが正常に動作しています。")
+        self.audio_test_button.setEnabled(True)
+        self.phrase_label.setText("✓ チェック完了")
+        self.volume_progress.setValue(0)
+        self.volume_progress.setStyleSheet("""
+            QProgressBar {
+                border: 3px solid #bdc3c7;
+                border-radius: 10px;
+                text-align: center;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QProgressBar::chunk {
+                background-color: #95a5a6;
+                border-radius: 7px;
+            }
+        """)
+        self.next_button.setEnabled(True)
+    
+    def _on_audio_check_failed(self, message="音声が検出されませんでした。マイクを確認してください。"):
+        """音声チェック失敗"""
+        self.status_label.setText(f"✗ {message}")
+        self.audio_test_button.setEnabled(True)
+        self.phrase_label.setText("「音声テストを開始」ボタンを押してください")
+        self.volume_progress.setValue(0)
+        self.volume_progress.setStyleSheet("""
+            QProgressBar {
+                border: 3px solid #bdc3c7;
+                border-radius: 10px;
+                text-align: center;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QProgressBar::chunk {
+                background-color: #95a5a6;
+                border-radius: 7px;
+            }
+        """)
+    
+    def _on_audio_check_error(self, error_msg):
+        """音声チェックエラー"""
+        self.recording = False
+        self.volume_update_timer.stop()
+        self.status_label.setText(f"エラー: {error_msg}")
+        self.audio_test_button.setEnabled(True)
+        if hasattr(self, '_stream'):
+            try:
+                self._stream.stop_stream()
+                self._stream.close()
+            except:
+                pass
+        if hasattr(self, '_p_audio'):
+            try:
+                self._p_audio.terminate()
+                self._p_audio = None
+            except:
+                pass
+
+class SpeakerCheckScreen(QWidget):
+    """スピーカーチェック画面"""
+    speaker_check_completed = pyqtSignal()  # スピーカーチェック完了シグナル
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 全画面表示に対応したレイアウト
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # 中央コンテナ（最大幅を制限して全画面でも見やすく）
+        container = QWidget()
+        container.setMaximumWidth(900)
+        container_layout = QVBoxLayout()
+        container_layout.setSpacing(25)
+        container_layout.setContentsMargins(60, 40, 60, 40)
+        
+        container_layout.addStretch()
+        
+        # タイトル
+        title_label = QLabel("スピーカーから音声が繰り返し再生されます。音量を調整してください。\n調整が終わったら「次へ」ボタンを押してください。")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 20px;
+                font-weight: bold;
+                color: #2c3e50;
+                padding: 20px;
+                line-height: 1.6;
+            }
+        """)
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setWordWrap(True)
+        title_label.setMinimumWidth(600)
+        container_layout.addWidget(title_label)
+        
+        container_layout.addSpacing(30)
+        
+        # 音量チェックボタン（緑のボタン）
+        self.volume_test_button = QPushButton("音量テストを開始")
+        self.volume_test_button.setStyleSheet("""
+            QPushButton {
+                font-size: 18px;
+                padding: 12px 30px;
+                background-color: #2ecc71;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                max-width: 400px;
+            }
+            QPushButton:hover {
+                background-color: #27ae60;
+            }
+            QPushButton:disabled {
+                background-color: #bdc3c7;
+                color: #7f8c8d;
+            }
+        """)
+        self.volume_test_button.setMaximumWidth(400)
+        self.volume_test_button.clicked.connect(self._start_volume_test)
+        container_layout.addWidget(self.volume_test_button, alignment=Qt.AlignCenter)
+        
+        container_layout.addSpacing(20)
+        
+        # 次へボタン（緑のボタン）
+        self.next_button = QPushButton("次へ")
+        self.next_button.setStyleSheet("""
+            QPushButton {
+                font-size: 18px;
+                padding: 12px 30px;
+                background-color: #2ecc71;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                max-width: 400px;
+            }
+            QPushButton:hover {
+                background-color: #27ae60;
+            }
+            QPushButton:disabled {
+                background-color: #bdc3c7;
+                color: #7f8c8d;
+            }
+        """)
+        self.next_button.setMaximumWidth(400)
+        self.next_button.setEnabled(False)
+        container_layout.addWidget(self.next_button, alignment=Qt.AlignCenter)
+        
+        container_layout.addStretch()
+        container.setLayout(container_layout)
+        
+        # 中央揃え
+        main_layout.addStretch()
+        main_layout.addWidget(container, alignment=Qt.AlignCenter)
+        main_layout.addStretch()
+        
+        self.setLayout(main_layout)
+        
+        self.volume_checked = False
+        self.volume_testing = False
+        self.volume_test_thread = None
+        self.volume_test_stop_flag = False
+        self.current_audio_stream = None  # 現在再生中のオーディオストリーム
+        self.current_p_audio = None  # 現在のPyAudioインスタンス
+        self._audio_lock = threading.Lock()  # オーディオリソースへのアクセスを保護するロック
+        
+        # 次へボタンクリック時に音量テストを停止
+        self.next_button.clicked.connect(self._stop_volume_test_on_next)
+    
+    def _start_volume_test(self):
+        """音量テストを開始（ループ再生）"""
+        self.volume_test_button.setEnabled(False)
+        self.volume_testing = True
+        self.volume_test_stop_flag = False
+        
+        # 音量テストを実行（非同期）
+        from threading import Thread
+        self.volume_test_thread = Thread(target=self._play_volume_test_loop, daemon=True)
+        self.volume_test_thread.start()
+        
+        # 次へボタンを有効化（ユーザーが停止できるように）
+        self.next_button.setEnabled(True)
+    
+    def _play_volume_test_loop(self):
+        """テスト音声をループ再生（中断可能）"""
+        try:
+            from google.cloud import texttospeech_v1beta1 as texttospeech
+            import pyaudio
+            import numpy as np
+            import time
+            
+            # 定数（gd_managerから取得）
+            RATE = 24000
+            CHUNK = 1024
+            FORMAT = pyaudio.paInt16
+            CHANNELS = 1
+            LANGUAGE_CODE_TTS = "ja-JP"
+            
+            test_message = "スピーカーから音声が再生されます。音量を調整してください。調整が終わったら「次へ」ボタンを押してください。"
+            voice_name = "ja-JP-Neural2-D"
+            
+            tts_client = texttospeech.TextToSpeechClient()
+            
+            # 音声合成
+            synthesis_input = texttospeech.SynthesisInput(text=test_message)
+            voice = texttospeech.VoiceSelectionParams(
+                language_code=LANGUAGE_CODE_TTS,
+                name=voice_name,
+                ssml_gender=texttospeech.SsmlVoiceGender.MALE
+            )
+            audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.LINEAR16,
+                sample_rate_hertz=RATE,
+                speaking_rate=1.2,
+                pitch=0.0
+            )
+            
+            response = tts_client.synthesize_speech(
+                input=synthesis_input, voice=voice, audio_config=audio_config
+            )
+            audio_content = response.audio_content
+            
+            # ループ再生
+            while self.volume_testing and not self.volume_test_stop_flag:
+                if self.volume_test_stop_flag:
+                    break
+                
+                try:
+                    # ロックを取得してリソースを安全に作成
+                    with self._audio_lock:
+                        if self.volume_test_stop_flag:
+                            break
+                        self.current_p_audio = pyaudio.PyAudio()
+                        stream = self.current_p_audio.open(
+                            format=FORMAT,
+                            channels=CHANNELS,
+                            rate=RATE,
+                            output=True,
+                            frames_per_buffer=CHUNK
+                        )
+                        self.current_audio_stream = stream
+                    stream.start_stream()
+                    
+                    # 無音データを先頭に追加
+                    silence_chunks = 3
+                    silence_data = np.zeros(CHUNK * silence_chunks, dtype=np.int16)
+                    audio_data = np.frombuffer(audio_content, dtype=np.int16)
+                    combined_audio = np.concatenate([silence_data, audio_data])
+                    total_frames = len(combined_audio)
+                    
+                    for i in range(0, total_frames, CHUNK):
+                        if self.volume_test_stop_flag:
+                            break
+                        chunk_data = combined_audio[i:i+CHUNK]
+                        if len(chunk_data) < CHUNK:
+                            chunk_data = np.pad(chunk_data, (0, CHUNK - len(chunk_data)), mode='constant')
+                        try:
+                            stream.write(chunk_data.tobytes())
+                        except:
+                            # ストリームが既に閉じられている可能性
+                            break
+                    
+                    # ロックを取得してリソースを安全にクリーンアップ
+                    with self._audio_lock:
+                        if not self.volume_test_stop_flag:
+                            try:
+                                stream.stop_stream()
+                            except:
+                                pass
+                        try:
+                            stream.close()
+                        except:
+                            pass
+                        try:
+                            if self.current_p_audio:
+                                self.current_p_audio.terminate()
+                        except:
+                            pass
+                        self.current_audio_stream = None
+                        self.current_p_audio = None
+                    
+                    if self.volume_test_stop_flag:
+                        break
+                    
+                    time.sleep(0.5)  # 少し待機してから次の再生
+                    
+                except Exception as e:
+                    # エラーが発生してもリソースをクリーンアップ
+                    with self._audio_lock:
+                        if self.current_audio_stream:
+                            try:
+                                if hasattr(self.current_audio_stream, 'is_active'):
+                                    try:
+                                        if self.current_audio_stream.is_active():
+                                            self.current_audio_stream.stop_stream()
+                                    except:
+                                        pass
+                                self.current_audio_stream.close()
+                            except:
+                                pass
+                            self.current_audio_stream = None
+                        if self.current_p_audio:
+                            try:
+                                self.current_p_audio.terminate()
+                            except:
+                                pass
+                            self.current_p_audio = None
+                    # 停止フラグが立っている場合はエラーを無視して終了
+                    if self.volume_test_stop_flag:
+                        break
+                    # 停止フラグが立っていない場合もエラーを無視して続行（無限ループを防ぐ）
+                    print(f"[警告]: 音声再生中にエラー: {e}")
+                    time.sleep(0.5)  # エラー後も少し待機
+            
+        except Exception as e:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._on_volume_check_error(str(e)))
+    
+    def _stop_volume_test_on_next(self):
+        """次へボタンクリック時に音量テストを停止（音声も中断）"""
+        try:
+            # 停止フラグを設定（スレッドに停止を通知）
+            self.volume_testing = False
+            self.volume_test_stop_flag = True
+            
+            # ロックを取得してリソースを安全にクリーンアップ
+            with self._audio_lock:
+                # 現在再生中の音声を中断
+                stream = self.current_audio_stream
+                p_audio = self.current_p_audio
+                
+                if stream:
+                    try:
+                        # ストリームが有効かチェック
+                        if hasattr(stream, 'is_active'):
+                            try:
+                                if stream.is_active():
+                                    stream.stop_stream()
+                            except:
+                                pass  # 既に停止している可能性
+                        stream.close()
+                    except Exception as e:
+                        print(f"[警告]: 音声ストリームの停止中にエラー: {e}")
+                    finally:
+                        self.current_audio_stream = None
+                
+                if p_audio:
+                    try:
+                        # すべてのストリームを閉じてからterminate
+                        p_audio.terminate()
+                    except Exception as e:
+                        print(f"[警告]: PyAudioの終了中にエラー: {e}")
+                    finally:
+                        self.current_p_audio = None
+            
+            # スレッドの終了を少し待つ（最大0.5秒）
+            if self.volume_test_thread and self.volume_test_thread.is_alive():
+                self.volume_test_thread.join(timeout=0.5)
+            
+            self.volume_checked = True
+            
+            # 全画面表示にする
+            window = self.window()
+            if window:
+                try:
+                    window.showFullScreen()
+                except Exception as e:
+                    print(f"[警告]: 全画面表示の設定中にエラー: {e}")
+            
+            # シグナルを発火（例外が発生しても実行）
+            try:
+                self.speaker_check_completed.emit()
+            except Exception as e:
+                print(f"[警告]: シグナル発火中にエラー: {e}")
+                
+        except Exception as e:
+            print(f"[エラー]: 音量テスト停止処理中にエラー: {e}")
+            import traceback
+            traceback.print_exc()
+            # エラーが発生してもシグナルは発火する
+            try:
+                self.speaker_check_completed.emit()
+            except:
+                pass
+    
+    def _on_volume_check_error(self, error_msg):
+        """音量チェックエラー"""
+        self.volume_testing = False
+        self.volume_test_stop_flag = True
+        self.volume_test_button.setEnabled(True)
+        print(f"[エラー]: {error_msg}")
+
 class ControlGroupAfterFirstScreen(QWidget):
     """統制群用: 1回目終了後の画面（学習用ドキュメント表示 + 2回目GD開始ボタン）"""
     next_gd_requested = pyqtSignal()
+    reading_timeout = pyqtSignal()  # 読書時間終了時に発火
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1002,12 +1934,24 @@ class ControlGroupAfterFirstScreen(QWidget):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
         
-        # メッセージ
-        message = QLabel("1回目のグループディスカッションが終了しました。\n\n"
-                         "統制群の方は、以下の「ファシリテーション・ハンドブック」を読んでください。\n"
-                         "内容を確認したら、2回目のグループディスカッションを開始してください。")
-        message.setStyleSheet("font-size: 16px; margin-bottom: 10px;")
-        message.setAlignment(Qt.AlignLeft)
+        # 読書時間カウントダウンラベル
+        self.reading_countdown_label = QLabel()
+        self.reading_countdown_label.setStyleSheet("""
+            QLabel {
+                font-size: 36px;
+                font-weight: bold;
+                color: #e74c3c;
+                margin-bottom: 10px;
+            }
+        """)
+        self.reading_countdown_label.setAlignment(Qt.AlignCenter)
+        self.reading_countdown_label.hide()  # 初期状態は非表示
+        
+        # 読書時間メッセージラベル
+        self.reading_message_label = QLabel()
+        self.reading_message_label.setStyleSheet("font-size: 16px; margin-bottom: 10px;")
+        self.reading_message_label.setAlignment(Qt.AlignCenter)
+        self.reading_message_label.hide()  # 初期状態は非表示
         
         # 学習用ドキュメント表示エリア（統制群用資料）
         self.doc_text = QTextEdit()
@@ -1085,9 +2029,47 @@ class ControlGroupAfterFirstScreen(QWidget):
         """)
         self.next_gd_button.clicked.connect(self.next_gd_requested.emit)
         
-        layout.addWidget(message)
+        layout.addWidget(self.reading_countdown_label)
+        layout.addWidget(self.reading_message_label)
         layout.addWidget(self.doc_text)
         layout.addWidget(self.next_gd_button, alignment=Qt.AlignCenter)
         
         self.setLayout(layout)
+        
+        # 読書時間タイマー
+        self.reading_timer = QTimer()
+        self.reading_timer.timeout.connect(self._update_reading_countdown)
+        self.reading_remaining_seconds = 0
+        self.reading_active = False
+    
+    def start_reading_time(self, seconds=300):
+        """読書時間を開始（5分間、開発モードの場合は10秒）"""
+        self.reading_remaining_seconds = seconds
+        self.reading_active = True
+        self.reading_countdown_label.show()
+        self.reading_message_label.show()
+        # 時間に応じてメッセージを変更（アナウンス文言に合わせる）
+        if seconds <= 30:
+            self.reading_message_label.setText("ファシリテーションに関するハンドブックを10秒間読み、2回目のグループディスカッションに備えてください。")
+        else:
+            self.reading_message_label.setText("ファシリテーションに関するハンドブックを5分間読み、2回目のグループディスカッションに備えてください。")
+        self.next_gd_button.hide()  # 読書時間中はボタンを非表示
+        self._update_reading_countdown()
+        self.reading_timer.start(1000)  # 1秒ごとに更新
+    
+    def _update_reading_countdown(self):
+        """読書時間カウントダウンを更新"""
+        if self.reading_remaining_seconds > 0:
+            minutes = self.reading_remaining_seconds // 60
+            seconds = self.reading_remaining_seconds % 60
+            self.reading_countdown_label.setText(f"{minutes:02d}:{seconds:02d}")
+            self.reading_remaining_seconds -= 1
+        else:
+            # 読書時間終了
+            self.reading_timer.stop()
+            self.reading_active = False
+            self.reading_countdown_label.hide()
+            self.reading_message_label.hide()
+            # 自動的に2回目GD開始確認画面へ遷移
+            self.reading_timeout.emit()
 

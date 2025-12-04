@@ -563,7 +563,7 @@ class GDThread(QThread):
                 end_message = "グループディスカッションを終了します。お疲れ様でした。フィードバックレポートを生成します。"
             else:
                 end_message = "グループディスカッションを終了します。お疲れ様でした。"
-            self.manager._synthesize_and_play_system_message(end_message)
+            self.manager._synthesize_and_play_system_message(end_message, gd_thread=self)
             
             # フィードバックを生成し、シグナルで送信（進捗表示付き、統制群の場合はAIフィードバックは生成しない）
             report = self.manager.generate_simple_feedback_report(
@@ -574,7 +574,7 @@ class GDThread(QThread):
         else:
             # 2回目: フィードバックを生成するが表示はしない（データは自動保存される）
             end_message = "グループディスカッションを終了します。お疲れ様でした。"
-            self.manager._synthesize_and_play_system_message(end_message)
+            self.manager._synthesize_and_play_system_message(end_message, gd_thread=self)
             # フィードバックを生成（進捗表示なし、表示もされない、統制群の場合はAIフィードバックは生成しない）
             report = self.manager.generate_simple_feedback_report(experiment_group=self.experiment_group)
             self.finished.emit(report)
@@ -1287,11 +1287,15 @@ class GDManager:
             self._play_audio(audio_content)
             print(f"[{ai_id}]: 再生終了。")
 
-    def _synthesize_and_play_system_message(self, text_to_synthesize):
+    def _synthesize_and_play_system_message(self, text_to_synthesize, gd_thread=None):
         """システムからのメッセージを音声合成し、再生する。標準的な声を使用。"""
         if not text_to_synthesize:
             print("[システム]: 合成対象のテキストが空のため再生をスキップします。")
             return
+
+        # システム発話開始を通知（シグナルを使用）
+        if gd_thread is not None and hasattr(gd_thread, "system_speaking"):
+            gd_thread.system_speaking.emit(True)
 
         # マークダウン記号を除去
         cleaned_text = self._clean_text_for_tts(text_to_synthesize)
@@ -1320,6 +1324,9 @@ class GDManager:
             audio_content = response.audio_content
         except Exception as e:
             print(f"システムメッセージ合成エラー: {e}")
+            # エラー時もシグナルを送信
+            if gd_thread is not None and hasattr(gd_thread, "system_speaking"):
+                gd_thread.system_speaking.emit(False)
             return
         
         stream = None
@@ -1346,10 +1353,6 @@ class GDManager:
             
             print(f"[システム]: 音声を再生中...")
             
-            # システム発話中の表示を開始（GUIに通知）
-            if hasattr(self, 'gui_window') and self.gui_window and hasattr(self.gui_window, 'gd_screen'):
-                self.gui_window.gd_screen.show_system_speaking()
-            
             # チャンク単位で書き込み（音声の最初が切れるのを防ぐ）
             
             for i in range(0, total_frames, CHUNK):
@@ -1366,26 +1369,17 @@ class GDManager:
             # 少し待機して音声再生が完全に終了するのを待つ
             time.sleep(0.1)
             
-            # システム発話中の表示を終了（GUIに通知）
-            if hasattr(self, 'gui_window') and self.gui_window and hasattr(self.gui_window, 'gd_screen'):
-                self.gui_window.gd_screen.hide_system_speaking()
-            
             print("再生終了。")
         except Exception as e:
             print(f"システムメッセージ再生エラー: {e}")
-            # エラー時もシステム発話中の表示を終了
-            if hasattr(self, 'gui_window') and self.gui_window and hasattr(self.gui_window, 'gd_screen'):
-                try:
-                    self.gui_window.gd_screen.hide_system_speaking()
-                except Exception:
-                    pass
         finally:
-            # 念のため、finallyブロックでもシステム発話中の表示を終了
-            if hasattr(self, 'gui_window') and self.gui_window and hasattr(self.gui_window, 'gd_screen'):
-                try:
-                    self.gui_window.gd_screen.hide_system_speaking()
-                except Exception:
-                    pass
+            if stream:
+                stream.stop_stream()
+                stream.close()
+            p_audio.terminate() # PyAudioインスタンスを終了
+            # システム発話終了を通知（シグナルを使用）
+            if gd_thread is not None and hasattr(gd_thread, "system_speaking"):
+                gd_thread.system_speaking.emit(False)
             if stream:
                 try:
                     if stream.is_active():
@@ -2560,7 +2554,7 @@ JSON以外の説明は不要です。"""
                 kickoff_message = f"今回のファシリテーターは{self.username}さんです。制限時間は{time_display}です。それでは、テーマについて議論を始めてください。"
                 self.conversation_history.append({"speaker": "システム", "content": kickoff_message})
                 print(f"[システム]: {kickoff_message}")
-                self._synthesize_and_play_system_message(kickoff_message)
+                self._synthesize_and_play_system_message(kickoff_message, gd_thread=gd_thread)
                 self.kickoff_announced = True
                 
                 # タイマーを開始（システムメッセージ再生後に開始）
@@ -3075,7 +3069,7 @@ JSON以外の説明は不要です。"""
                 kickoff_message = f"今回のファシリテーターは{self.username}さんです。制限時間は{time_display}です。それでは、テーマについて議論を始めてください。"
                 self.conversation_history.append({"speaker": "システム", "content": kickoff_message})
                 print(f"[システム]: {kickoff_message}")
-                self._synthesize_and_play_system_message(kickoff_message)
+                self._synthesize_and_play_system_message(kickoff_message, gd_thread=gd_thread)
                 self.kickoff_announced = True
                 
                 # タイマーを開始（システムメッセージ再生後に開始）
@@ -3284,6 +3278,8 @@ if __name__ == "__main__":
             context.gd_thread.timer_updated.connect(gui_window.update_timer)
             # 役割更新（メインスレッドで参加者ラベルを更新）
             context.gd_thread.role_updated.connect(gui_window.gd_screen.update_participant_role)
+            # システム発話中シグナル接続
+            context.gd_thread.system_speaking.connect(lambda is_speaking: gui_window.show_system_speaking() if is_speaking else gui_window.hide_system_speaking())
             # フィードバック生成進捗表示（1回目のみ）
             if round_number == 1:
                 context.gd_thread.feedback_progress.connect(gui_window._on_feedback_progress)
