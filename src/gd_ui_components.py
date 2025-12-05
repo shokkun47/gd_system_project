@@ -403,22 +403,22 @@ class GDScreen(QWidget):
         """)
         self.system_banner.hide()  # 初期状態は非表示
         
-        # AI思考中/発言中バナー（初期状態は非表示）
-        self.ai_status_banner = QLabel("")
+        # AI思考中/発言中/待機中バナー（常に表示）
+        self.ai_status_banner = QLabel("⏳ 待機中...")
         self.ai_status_banner.setAlignment(Qt.AlignCenter)
         self.ai_status_banner.setStyleSheet("""
             QLabel {
-                background-color: #fff3cd;
-                color: #856404;
+                background-color: #e8f4f8;
+                color: #0c5460;
                 font-size: 14px;
                 font-weight: bold;
                 padding: 8px;
-                border: 1px solid #ffeaa7;
+                border: 1px solid #bee5eb;
                 border-radius: 5px;
                 margin: 5px;
             }
         """)
-        self.ai_status_banner.hide()  # 初期状態は非表示
+        # 初期状態から表示（常に表示）
         
         # 上部: アバターと残り時間を横並びに配置
         top_layout = QHBoxLayout()
@@ -678,16 +678,74 @@ class GDScreen(QWidget):
     def show_ai_thinking(self, ai_name):
         """AI思考中バナーを表示"""
         self.ai_status_banner.setText(f"💭 {ai_name}さんが考えています...")
+        self.ai_status_banner.setStyleSheet("""
+            QLabel {
+                background-color: #fff3cd;
+                color: #856404;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 8px;
+                border: 1px solid #ffeaa7;
+                border-radius: 5px;
+                margin: 5px;
+            }
+        """)
         self.ai_status_banner.show()
     
     def show_ai_speaking(self, ai_name):
         """AI発言中バナーを表示"""
         self.ai_status_banner.setText(f"🔊 {ai_name}さんが話しています...")
+        self.ai_status_banner.setStyleSheet("""
+            QLabel {
+                background-color: #d4edda;
+                color: #155724;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 8px;
+                border: 1px solid #c3e6cb;
+                border-radius: 5px;
+                margin: 5px;
+            }
+        """)
+        self.ai_status_banner.show()
+    
+    def show_user_speaking(self, user_name):
+        """ユーザー発言中バナーを表示"""
+        self.ai_status_banner.setText(f"🎤 {user_name}さんが話しています...")
+        self.ai_status_banner.setStyleSheet("""
+            QLabel {
+                background-color: #cce5ff;
+                color: #004085;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 8px;
+                border: 1px solid #99ccff;
+                border-radius: 5px;
+                margin: 5px;
+            }
+        """)
+        self.ai_status_banner.show()
+    
+    def show_waiting(self):
+        """待機中バナーを表示"""
+        self.ai_status_banner.setText("⏳ 待機中...")
+        self.ai_status_banner.setStyleSheet("""
+            QLabel {
+                background-color: #e8f4f8;
+                color: #0c5460;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 8px;
+                border: 1px solid #bee5eb;
+                border-radius: 5px;
+                margin: 5px;
+            }
+        """)
         self.ai_status_banner.show()
     
     def hide_ai_status(self):
-        """AI状態バナーを非表示"""
-        self.ai_status_banner.hide()
+        """AI状態バナーを待機中に戻す（非表示ではなく待機中を表示）"""
+        self.show_waiting()
     
     def set_theme(self, theme):
         """テーマラベルにテーマタイトルのみを表示"""
@@ -1922,8 +1980,7 @@ class SpeakerCheckScreen(QWidget):
         print(f"[エラー]: {error_msg}")
 
 class ControlGroupAfterFirstScreen(QWidget):
-    """統制群用: 1回目終了後の画面（学習用ドキュメント表示 + 2回目GD開始ボタン）"""
-    next_gd_requested = pyqtSignal()
+    """統制群用: 1回目終了後の画面（学習用ドキュメント表示）"""
     reading_timeout = pyqtSignal()  # 読書時間終了時に発火
     
     def __init__(self, parent=None):
@@ -2010,27 +2067,9 @@ class ControlGroupAfterFirstScreen(QWidget):
             "次回の議論では、この5つを**最低1回ずつは使ってみる**つもりで取り組んでみてください。\n\n"
         )
         
-        # 2回目GD開始ボタン
-        self.next_gd_button = QPushButton("2回目のグループディスカッションを開始する")
-        self.next_gd_button.setStyleSheet("""
-            QPushButton {
-                font-size: 18px;
-                padding: 15px 40px;
-                background-color: #e67e22;
-                color: white;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #d35400;
-            }
-        """)
-        self.next_gd_button.clicked.connect(self.next_gd_requested.emit)
-        
         layout.addWidget(self.reading_countdown_label)
         layout.addWidget(self.reading_message_label)
         layout.addWidget(self.doc_text)
-        layout.addWidget(self.next_gd_button, alignment=Qt.AlignCenter)
         
         self.setLayout(layout)
         
@@ -2051,7 +2090,6 @@ class ControlGroupAfterFirstScreen(QWidget):
             self.reading_message_label.setText("ファシリテーションに関するハンドブックを10秒間読み、2回目のグループディスカッションに備えてください。")
         else:
             self.reading_message_label.setText("ファシリテーションに関するハンドブックを5分間読み、2回目のグループディスカッションに備えてください。")
-        self.next_gd_button.hide()  # 読書時間中はボタンを非表示
         self._update_reading_countdown()
         self.reading_timer.start(1000)  # 1秒ごとに更新
     
