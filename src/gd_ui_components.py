@@ -929,9 +929,14 @@ class GDStartConfirmScreen(QWidget):
             self.thinking_message_label.hide()
             self.announcement_label.setText("思考時間が終了しました。「開始する」ボタンを押して、グループディスカッションを開始してください。")
             self.announcement_label.show()
-            self.confirm_button.setEnabled(True)  # 開始ボタンを有効化
+            # ボタンはまだ有効化しない（アナウンス終了後に有効化）
+            self.confirm_button.setEnabled(False)
             # アナウンスシグナルを発火
             self.thinking_timeout.emit()
+    
+    def enable_confirm_button_after_announcement(self):
+        """アナウンス再生後に開始ボタンを有効化"""
+        self.confirm_button.setEnabled(True)
     
     def stop_thinking_time(self):
         """思考時間を停止"""
@@ -1008,38 +1013,11 @@ class FeedbackScreen(QWidget):
             }
         """)
         
-        # ボタンエリア
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(15)
-        
-        # 2回目GD開始ボタン（実験群のみ表示）
-        self.next_gd_button = QPushButton("2回目のグループディスカッションを開始する")
-        self.next_gd_button.setStyleSheet("""
-            QPushButton {
-                font-size: 16px;
-                padding: 10px 30px;
-                background-color: #e67e22;
-                color: white;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #d35400;
-            }
-        """)
-        self.next_gd_button.clicked.connect(self.next_gd_requested.emit)
-        self.next_gd_button.hide()  # 初期状態は非表示
-        
-        button_layout.addStretch()
-        button_layout.addWidget(self.next_gd_button)
-        button_layout.addStretch()
-        
         layout.addWidget(title)
         layout.addWidget(self.progress_label)
         layout.addWidget(self.reading_countdown_label)
         layout.addWidget(self.reading_message_label)
         layout.addWidget(self.feedback_text)
-        layout.addLayout(button_layout)
         
         self.setLayout(layout)
         
@@ -1060,7 +1038,6 @@ class FeedbackScreen(QWidget):
             self.reading_message_label.setText("AIからのフィードバックレポートを10秒間読み、2回目のグループディスカッションに備えてください。")
         else:
             self.reading_message_label.setText("AIからのフィードバックレポートを5分間読み、2回目のグループディスカッションに備えてください。")
-        self.next_gd_button.hide()  # 読書時間中はボタンを非表示
         self._update_reading_countdown()
         self.reading_timer.start(1000)  # 1秒ごとに更新
     
@@ -1080,7 +1057,7 @@ class FeedbackScreen(QWidget):
             # 自動的に2回目GD開始確認画面へ遷移
             self.reading_timeout.emit()
     
-    def set_feedback(self, feedback_dict, show_next_button=False):
+    def set_feedback(self, feedback_dict):
         """フィードバックを設定"""
         # 進捗表示を非表示
         self.progress_label.hide()
@@ -1105,23 +1082,35 @@ class FeedbackScreen(QWidget):
         if exp_feedback:
             feedback_md += "## フィードバック（Good / More / Action）\n\n"
             # 改行を適切に処理して読みやすくする
-            # 段落ごとに改行を追加（連続する改行を2つに統一）
             import re
             # まず、既存の改行を保持しつつ、段落間の改行を統一
-            formatted_feedback = re.sub(r'\n{3,}', '\n\n', exp_feedback.strip())
+            formatted_feedback = exp_feedback.strip()
+            formatted_feedback = re.sub(r'\n{3,}', '\n\n', formatted_feedback)
+            
             # セクション見出し（## や ###）の前後に改行を追加
             formatted_feedback = re.sub(r'\n(##\s+)', r'\n\n\1', formatted_feedback)
-            formatted_feedback = re.sub(r'(##\s+[^\n]+)\n', r'\1\n\n', formatted_feedback)
+            formatted_feedback = re.sub(r'(##\s+[^\n]+)\n(?!\n)', r'\1\n\n', formatted_feedback)
+            
+            # 「Good」「More」「Action」などのセクション見出し（###）の前後に改行を追加
+            formatted_feedback = re.sub(r'\n(###\s+)', r'\n\n\1', formatted_feedback)
+            formatted_feedback = re.sub(r'(###\s+[^\n]+)\n(?!\n)', r'\1\n\n', formatted_feedback)
+            
+            # 「Good:」「More:」「Action:」などのキーワードの前後に改行を追加
+            formatted_feedback = re.sub(r'\n(Good|More|Action):\s*', r'\n\n**\1:**\n\n', formatted_feedback, flags=re.IGNORECASE)
+            
+            # リスト項目（- や * で始まる行）の前に改行を追加（ただし連続するリスト項目の間は改行しない）
+            formatted_feedback = re.sub(r'\n([-*]\s+)', r'\n\n\1', formatted_feedback)
+            
+            # 文の区切り（。や！や？の後）で改行を追加（ただし、既に改行がある場合は追加しない）
+            formatted_feedback = re.sub(r'([。！？])\s+([^\n。！？\n])', r'\1\n\n\2', formatted_feedback)
+            
+            # 連続する改行を2つに統一（最終的な整理）
+            formatted_feedback = re.sub(r'\n{3,}', '\n\n', formatted_feedback)
+            
             feedback_md += formatted_feedback + "\n\n"
         
         # Markdownとしてレンダリング
         self.feedback_text.setMarkdown(feedback_md)
-        
-        # 2回目GD開始ボタンの表示/非表示を制御（読書時間中は非表示）
-        if show_next_button and not self.reading_active:
-            self.next_gd_button.show()
-        else:
-            self.next_gd_button.hide()
     
     def show_progress(self, message):
         """進捗メッセージを表示"""
@@ -2072,4 +2061,3 @@ class ControlGroupAfterFirstScreen(QWidget):
             self.reading_message_label.hide()
             # 自動的に2回目GD開始確認画面へ遷移
             self.reading_timeout.emit()
-

@@ -521,7 +521,12 @@ class GDReportWindow(QMainWindow):
         from PySide6.QtCore import QTimer
         from threading import Thread
         announcement = "思考時間が終了しました。「開始する」ボタンを押してください。"
+        # アナウンスを再生
         QTimer.singleShot(500, lambda: Thread(target=lambda: _announce_system_message(announcement), daemon=True).start())
+        # アナウンス再生時間を推定して、その後にボタンを有効化
+        # speaking_rate=1.2の場合、1文字あたり約0.083秒、安全のため文字数*0.1秒+1秒のバッファ
+        estimated_duration = len(announcement) * 0.1 + 1.0
+        QTimer.singleShot(int((500 + estimated_duration * 1000)), lambda: self.gd_start_confirm_screen.enable_confirm_button_after_announcement())
     
     def _on_reading_timeout_feedback(self):
         """フィードバック読書時間終了時 → 2回目GD開始確認画面へ"""
@@ -605,8 +610,8 @@ class GDReportWindow(QMainWindow):
                 print(f"[警告]: データの自動保存に失敗しました: {e}")
         
         if self.experiment_group == "experimental":
-            # 実験群: フィードバック画面を表示（2回目開始ボタン付き）
-            self.feedback_screen.set_feedback(feedback_dict, show_next_button=True)
+            # 実験群: フィードバック画面を表示
+            self.feedback_screen.set_feedback(feedback_dict)
             self.stacked_widget.setCurrentIndex(5)  # フィードバック画面へ（index 5）
             # システムアナウンス: 読書時間開始
             reading_time_text = "10秒間" if DEV_MODE else "5分間"
@@ -2087,24 +2092,13 @@ class GDManager:
                     f.write("---\n\n")
                 
                 for key, value in report.items():
-                    # スコアと検出詳細情報（分析用）は既に表示済み、または表示しない
-                    if key in ["ファシリテーション手法スコア", "合計スコア", "検出詳細情報（分析用）"]:
+                    # スコア、検出詳細情報（分析用）、会話ログは表示しない
+                    if key in ["ファシリテーション手法スコア", "合計スコア", "検出詳細情報（分析用）", "会話ログ"]:
                         continue
                     f.write(f"## {key}\n\n")
                     if isinstance(value, dict):
                         for k, v in value.items():
                             f.write(f"- **{k}**: {v}\n\n")
-                    elif key == "会話ログ":
-                        # 会話ログは見やすく整形
-                        if isinstance(value, list):
-                            for i, entry in enumerate(value, 1):
-                                f.write(f"{i}. **{entry.get('speaker', '')}**: {entry.get('content', '')}\n\n")
-                        else:
-                            # 文字列の場合、改行を追加
-                            lines = str(value).split('\n')
-                            for line in lines:
-                                if line.strip():
-                                    f.write(f"{line}\n\n")
                     else:
                         # フィードバック本文など、長いテキストの場合は段落ごとに改行を追加
                         text = str(value)
