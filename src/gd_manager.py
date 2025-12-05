@@ -44,10 +44,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # === 開発モード設定 ===
 # 開発中は True、本番は False に設定
-DEV_MODE = True  # 実験用: False（開発モード: 時間を10秒に短縮、自動開始は無効）
+DEV_MODE = False  # 実験用: False（開発モード: 時間を10秒に短縮、自動開始は無効）
 DEV_DEFAULT_USERNAME = "テスト"  # 開発モード時のデフォルト名字
 DEV_THINKING_SECONDS = 0  # 開発モード時の思考時間（0=スキップ、現在は使用されていません）
-SKIP_INTRO = True  # 実験用: False（開発モードでも最初から最後までストーリーを確認するためFalseのまま）
+SKIP_INTRO = False  # 実験用: False（開発モードでも最初から最後までストーリーを確認するためFalseのまま）
 # ==================
 
 # 音声I/Oに関する共通設定
@@ -450,7 +450,7 @@ class GDReportWindow(QMainWindow):
         self.current_fullname = lastname + firstname  # フルネーム（保存時に使用）
         self.current_gd_round = 1
         # 1回目GD開始確認画面を表示
-        thinking_time_text = "10秒間" if DEV_MODE else "1分間"
+        thinking_time_text = "10秒間" if DEV_MODE else "2分間"
         self.gd_start_confirm_screen.set_message(
             f"これから1回目のグループディスカッションを開始します。\n手元の「①」と書かれている用紙を裏返して、記載されているテーマについて{thinking_time_text}考えてください。"
         )
@@ -465,7 +465,7 @@ class GDReportWindow(QMainWindow):
         # アナウンス再生後に思考時間タイマーを開始（テキストの長さから再生時間を推定）
         # speaking_rate=1.2の場合、1文字あたり約0.083秒、安全のため文字数*0.1秒+1秒のバッファ+3秒追加
         estimated_duration = len(announcement) * 0.1 + 1.0 + 3.0
-        thinking_seconds = 10 if DEV_MODE else 60  # 本番: 1分
+        thinking_seconds = 10 if DEV_MODE else 120  # 本番: 2分
         QTimer.singleShot(int(estimated_duration * 1000), lambda: self.gd_start_confirm_screen.start_thinking_time(thinking_seconds))
     
     def _on_gd_start_confirmed(self):
@@ -497,7 +497,7 @@ class GDReportWindow(QMainWindow):
         """2回目GD開始要求 → 2回目GD開始確認画面へ"""
         self.current_gd_round = 2
         # 2回目GD開始確認画面を表示
-        thinking_time_text = "10秒間" if DEV_MODE else "1分間"
+        thinking_time_text = "10秒間" if DEV_MODE else "2分間"
         self.gd_start_confirm_screen.set_message(
             f"これから2回目のグループディスカッションを開始します。\n手元の「②」と書かれている用紙を裏返して、記載されているテーマについて{thinking_time_text}考えてください。"
         )
@@ -512,7 +512,7 @@ class GDReportWindow(QMainWindow):
         # アナウンス再生後に思考時間タイマーを開始（テキストの長さから再生時間を推定）
         # speaking_rate=1.2の場合、1文字あたり約0.083秒、安全のため文字数*0.1秒+1秒のバッファ+3秒追加
         estimated_duration = len(announcement) * 0.1 + 1.0 + 3.0
-        thinking_seconds = 10 if DEV_MODE else 60  # 本番: 1分
+        thinking_seconds = 10 if DEV_MODE else 120  # 本番: 2分
         QTimer.singleShot(int(estimated_duration * 1000), lambda: self.gd_start_confirm_screen.start_thinking_time(thinking_seconds))
     
     def _on_thinking_timeout(self):
@@ -532,7 +532,7 @@ class GDReportWindow(QMainWindow):
         """フィードバック読書時間終了時 → 2回目GD開始確認画面へ"""
         self.current_gd_round = 2
         # 2回目GD開始確認画面を表示
-        thinking_time_text = "10秒間" if DEV_MODE else "1分間"
+        thinking_time_text = "10秒間" if DEV_MODE else "2分間"
         self.gd_start_confirm_screen.set_message(
             f"これから2回目のグループディスカッションを開始します。\n手元の「②」と書かれている用紙を裏返して、記載されているテーマについて{thinking_time_text}考えてください。"
         )
@@ -547,14 +547,14 @@ class GDReportWindow(QMainWindow):
         # アナウンス再生後に思考時間タイマーを開始（テキストの長さから再生時間を推定）
         # speaking_rate=1.2の場合、1文字あたり約0.083秒、安全のため文字数*0.1秒+1秒のバッファ+3秒追加
         estimated_duration = len(announcement) * 0.1 + 1.0 + 3.0
-        thinking_seconds = 10 if DEV_MODE else 60  # 本番: 1分
+        thinking_seconds = 10 if DEV_MODE else 120  # 本番: 2分
         QTimer.singleShot(int(estimated_duration * 1000), lambda: self.gd_start_confirm_screen.start_thinking_time(thinking_seconds))
     
     def _on_reading_timeout_control(self):
         """統制群読書時間終了時 → 2回目GD開始確認画面へ"""
         self.current_gd_round = 2
         # 2回目GD開始確認画面を表示
-        thinking_time_text = "10秒間" if DEV_MODE else "1分間"
+        thinking_time_text = "10秒間" if DEV_MODE else "2分間"
         self.gd_start_confirm_screen.set_message(
             f"これから2回目のグループディスカッションを開始します。\n手元の「②」と書かれている用紙を裏返して、記載されているテーマについて{thinking_time_text}考えてください。"
         )
@@ -569,7 +569,7 @@ class GDReportWindow(QMainWindow):
         # アナウンス再生後に思考時間タイマーを開始（テキストの長さから再生時間を推定）
         # speaking_rate=1.2の場合、1文字あたり約0.083秒、安全のため文字数*0.1秒+1秒のバッファ+3秒追加
         estimated_duration = len(announcement) * 0.1 + 1.0 + 3.0
-        thinking_seconds = 10 if DEV_MODE else 60  # 本番: 1分
+        thinking_seconds = 10 if DEV_MODE else 120  # 本番: 2分
         QTimer.singleShot(int(estimated_duration * 1000), lambda: self.gd_start_confirm_screen.start_thinking_time(thinking_seconds))
     
     # 外部から呼ばれるメソッド

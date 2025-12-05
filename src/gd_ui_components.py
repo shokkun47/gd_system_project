@@ -1097,8 +1097,9 @@ class FeedbackScreen(QWidget):
             
             # 「Good:」「More:」「Action:」などのキーワードの前後に改行を追加
             # 最初のGoodの前には区切り線を追加せず、MoreとActionの前には区切り線を追加
+            # セクション間にもっとスペースを追加するため、区切り線の前後に改行を追加
             formatted_feedback = re.sub(r'\n(Good):\s*', r'\n\n**\1:**\n\n', formatted_feedback, flags=re.IGNORECASE)
-            formatted_feedback = re.sub(r'\n(More|Action):\s*', r'\n\n---\n\n**\1:**\n\n', formatted_feedback, flags=re.IGNORECASE)
+            formatted_feedback = re.sub(r'\n(More|Action):\s*', r'\n\n\n---\n\n\n**\1:**\n\n', formatted_feedback, flags=re.IGNORECASE)
             
             # リスト項目（- や * で始まる行）の前に改行を追加（ただし連続するリスト項目の間は改行しない）
             formatted_feedback = re.sub(r'\n([-*]\s+)', r'\n\n\1', formatted_feedback)
@@ -1106,8 +1107,14 @@ class FeedbackScreen(QWidget):
             # 文の区切り（。や！や？の後）で改行を追加（ただし、既に改行がある場合は追加しない）
             formatted_feedback = re.sub(r'([。！？])\s+([^\n。！？\n])', r'\1\n\n\2', formatted_feedback)
             
-            # 連続する改行を2つに統一（最終的な整理）
+            # 連続する改行を整理（セクション間の区切り線周辺は保持、それ以外は2つに統一）
+            # 区切り線周辺の改行パターンを一時的に保護
+            formatted_feedback = formatted_feedback.replace('\n\n\n---\n\n\n', '___SEPARATOR___')
+            # 5つ以上の改行を4つに、3つ以上の改行を2つに統一
+            formatted_feedback = re.sub(r'\n{5,}', '\n\n\n\n', formatted_feedback)
             formatted_feedback = re.sub(r'\n{3,}', '\n\n', formatted_feedback)
+            # 区切り線を元に戻す（前後に3つの改行を保持）
+            formatted_feedback = formatted_feedback.replace('___SEPARATOR___', '\n\n\n---\n\n\n')
             
             feedback_md += formatted_feedback + "\n\n"
         
