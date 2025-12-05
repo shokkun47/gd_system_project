@@ -1096,7 +1096,9 @@ class FeedbackScreen(QWidget):
             formatted_feedback = re.sub(r'(###\s+[^\n]+)\n(?!\n)', r'\1\n\n', formatted_feedback)
             
             # 「Good:」「More:」「Action:」などのキーワードの前後に改行を追加
-            formatted_feedback = re.sub(r'\n(Good|More|Action):\s*', r'\n\n**\1:**\n\n', formatted_feedback, flags=re.IGNORECASE)
+            # 最初のGoodの前には区切り線を追加せず、MoreとActionの前には区切り線を追加
+            formatted_feedback = re.sub(r'\n(Good):\s*', r'\n\n**\1:**\n\n', formatted_feedback, flags=re.IGNORECASE)
+            formatted_feedback = re.sub(r'\n(More|Action):\s*', r'\n\n---\n\n**\1:**\n\n', formatted_feedback, flags=re.IGNORECASE)
             
             # リスト項目（- や * で始まる行）の前に改行を追加（ただし連続するリスト項目の間は改行しない）
             formatted_feedback = re.sub(r'\n([-*]\s+)', r'\n\n\1', formatted_feedback)
